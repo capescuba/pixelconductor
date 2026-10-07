@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+
+# Runtime logs
+logs/
+*.log
+*.err
+app_err.txt
+app_log.txt
+
+# Server-side sequence drafts (personal show data, runtime state)
+drafts/
+
+# Manual pre-git backups (history lives in git now)
+.pre-palette-backup/
+.pre-savefix-backup/
+
+# Machine-local Claude Code settings
+.claude/settings.local.json

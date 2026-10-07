@@ -1,0 +1,16 @@
+{"cutoff_s": 50.4, "sections": [
+ {"s": 50.434, "e": 70.24,  "mode": "tile", "src_s": 0.203, "src_e": 13.18, "cell_beats": 16},
+ {"s": 70.24,  "e": 92.857, "mode": "copy", "src_s": 24.9, "src_e": 47.5, "lag_beats": 112, "confidence": 0.91},
+ {"s": 92.857, "e": 96.11,  "mode": "dark", "note": "breakdown"},
+ {"s": 96.11,  "e": 99.36,  "mode": "copy", "src_s": 47.5, "src_e": 50.9, "lag_beats": 120, "models": ["String 1","String 2","String 3","String 4","String 5","String 6","String 7","String 8"]},
+ {"s": 98.94,  "e": 106.622,"mode": "tile", "src_s": 0.203, "src_e": 13.18, "cell_beats": 16},
+ {"s": 98.94,  "e": 124.764,"mode": "copy", "src_s": 50.4, "src_e": 50.45, "lag_beats": 120, "models": ["Icicles 1","Icicles 2","Icicles 3","Icicles 4"]},
+ {"s": 106.622,"e": 124.764,"mode": "extend", "model": "String 1"},
+ {"s": 106.622,"e": 124.764,"mode": "extend", "model": "Snow Flake 2"},
+ {"s": 127.956,"e": 131.402,"mode": "extend", "model": "Snow Flake 2"},
+ {"s": 125.23, "e": 143.0,  "mode": "copy", "src_s": 24.9, "src_e": 42.7, "lag_beats": 248, "confidence": 0.9},
+ {"s": 143.0,  "e": 147.45, "mode": "copy", "src_s": 45.4, "src_e": 50.9, "lag_beats": 240, "exclude": ["Icicles 1","Icicles 2","Icicles 3","Icicles 4"]},
+ {"s": 147.45, "e": 164.84, "mode": "copy", "src_s": 11.7, "src_e": 29.0, "lag_beats": 336, "confidence": 0.76},
+ {"s": 164.84, "e": 172.13, "mode": "copy", "src_s": 14.35, "src_e": 21.7, "lag_beats": 372, "confidence": 0.7},
+ {"s": 172.13, "e": 182.0,  "mode": "ending"}
+]}
