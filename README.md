@@ -108,7 +108,9 @@ The launcher writes server output to `logs/server.log`.
 3. Choose a color in the **Effects** panel, then drag an effect from the panel onto a
    track. Dropping on a group's header row creates one effect on the whole group; hold
    **Alt** while dropping to put a separate copy on each member instead. Double-click an
-   effect to change its type, timing, color, brightness and xLights properties.
+   effect to change its type, timing, color, brightness and xLights properties. Drag an
+   effect up or down onto another prop, drop or group to move it there (its timing only
+   changes if you also drag sideways), and paste copied effects onto any of those rows.
 4. Press **Save** (Ctrl+S) to write the `.xsq` back in place, or **Export .xsq** to
    download a copy.
 5. Open the sequence in xLights and render it before playing the show. The `.fseq`

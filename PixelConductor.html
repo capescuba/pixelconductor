@@ -3109,8 +3109,13 @@ function onTLMouseMove(e) {
     const dt = (x - d.startX) / S.PPS;
     if (d.mode === 'move') {
       const dur = d.origEnd - d.origStart;
-      eff.startTime = Math.max(0, snapTime(d.origStart + dt));
+      // Only retime (and snap) once the drag goes sideways, so moving an effect
+      // straight up/down to another track keeps its exact timing.
+      eff.startTime = Math.abs(x - d.startX) > 3 ? Math.max(0, snapTime(d.origStart + dt)) : d.origStart;
       eff.endTime   = eff.startTime + dur;
+      // Dragging onto another track (prop, drop or group header) moves it there.
+      const tgt = S.trackLayout[Math.floor(y / TRACK_H)];
+      if (isEffectRow(tgt) && tgt.propIdx !== eff.propIdx) eff.propIdx = tgt.propIdx;
     } else if (d.mode === 'resize-l') {
       eff.startTime = Math.max(0, Math.min(snapTime(d.origStart + dt), eff.endTime - 0.1));
     } else if (d.mode === 'resize-r') {
@@ -3596,11 +3601,11 @@ function pasteEffects(explicitRow, explicitTime) {
     let pi = -1;
     const modelRi  = propRowAtOffset(targetRow, c.rowOffset || 0);   // the model this entry lands on
     const modelRow = (modelRi >= 0) ? S.trackLayout[modelRi] : null;
-    if (modelRow && modelRow.type === 'prop') {
+    if (isEffectRow(modelRow)) {
       const mp = S.props[modelRow.propIdx];
       if (c.subName != null) {
         // drop effect → the target model's drop of the same name (even if collapsed)
-        if (mp && !mp.isSub) pi = S.props.findIndex(p => p.isSub && p.name === mp.name + '/' + c.subName);
+        if (mp && !mp.isSub && !mp.isGroup) pi = S.props.findIndex(p => p.isSub && p.name === mp.name + '/' + c.subName);
       } else {
         pi = modelRow.propIdx;
       }
@@ -3611,7 +3616,7 @@ function pasteEffects(explicitRow, explicitTime) {
     S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
     newIds.push(id);
   });
-  if (!newIds.length) return;
+  if (!newIds.length) { flashStatus('Nothing to paste here: the copied effects are on drops this row does not have'); return; }
   commitUndo(_pasteUndo);
   S.selectedIds = new Set(newIds);
   S.selectedId  = newIds[newIds.length - 1];
