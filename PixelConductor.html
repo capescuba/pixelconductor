@@ -1137,12 +1137,13 @@ function buildTrackLayout() {
     // The header row is also the group's own effect track (its pseudo-prop).
     const gp = S.props.findIndex(p => p.isGroup && p.name === grp.name);
     layout.push({ type: 'group', groupIdx: gi, name: grp.name, propIdx: gp >= 0 ? gp : null });
+    // xLights lets a model belong to several groups, so a prop is listed under
+    // every group that contains it; its effects show on each copy of its row.
     grp.members.forEach(mname => {
-      const pi = S.props.findIndex(p => p.name === mname);
-      if (pi >= 0 && !assigned.has(pi)) {
-        assigned.add(pi);  // always claim the prop, even when collapsed
-        if (!grp.collapsed) pushProp(pi, gi, mname);
-      }
+      const pi = S.props.findIndex(p => p.name === mname && !p.isGroup);
+      if (pi < 0) return;
+      assigned.add(pi);  // grouped props aren't repeated in the ungrouped tail
+      if (!grp.collapsed) pushProp(pi, gi, mname);
     });
   });
   // Ungrouped props at the end (submodels are emitted next to their parent)
@@ -1155,9 +1156,24 @@ function buildTrackLayout() {
 }
 
 // Row index for a given propIdx (-1 if hidden inside a collapsed group)
-function trackRowOf(propIdx) {
-  if (propIdx == null || propIdx < 0) return -1;
-  return S.trackLayout.findIndex(r => r.propIdx === propIdx);
+function trackRowOf(propIdx, near = S._rowContext) {
+  // A prop in several groups has several rows. Resolve to the copy in the same
+  // group as `near` (by default the row you last clicked), else the closest
+  // copy, so selection boxes, drags and copy offsets follow where you work.
+  const rows = trackRowsOf(propIdx);
+  if (rows.length <= 1 || near == null || !S.trackLayout[near]) return rows.length ? rows[0] : -1;
+  const g = S.trackLayout[near].groupIdx;
+  const sameGroup = rows.filter(r => S.trackLayout[r].groupIdx === g);
+  const pool = sameGroup.length ? sameGroup : rows;
+  return pool.reduce((best, r) => Math.abs(r - near) < Math.abs(best - near) ? r : best);
+}
+
+// Every visible row showing `propIdx` (more than one when it is in several groups).
+function trackRowsOf(propIdx) {
+  if (propIdx == null || propIdx < 0) return [];
+  const rows = [];
+  S.trackLayout.forEach((r, ri) => { if (r.propIdx === propIdx) rows.push(ri); });
+  return rows;
 }
 
 // A row that holds effects: a prop row, or a group header (whose effects live on
@@ -1655,6 +1671,7 @@ function setupEvents() {
       S.paletteDrag.tlX = ev.clientX - rect.left + rp.scrollLeft;
       S.paletteDrag.tlY = ev.clientY - rect.top;
       S.paletteDrag.alt = ev.altKey;   // Alt over a group header = copy onto each member
+      S._rowContext = Math.floor(S.paletteDrag.tlY / TRACK_H);
       tlCanvas.style.cursor = 'copy';
       updateDropHighlight(S.paletteDrag.tlY);   // highlight the target model row label
     } else {
@@ -2817,6 +2834,11 @@ function drawTimeline() {
 }
 
 function drawEffect(eff, sx) {
+  // A prop in several groups has a row under each; draw the effect on all of them.
+  trackRowsOf(eff.propIdx).forEach(ri => _drawEffectAt(eff, sx, ri));
+}
+
+function _drawEffectAt(eff, sx, ri) {
   sx = sx || 0;
   // provenance view: "Only new" / "Only original" hide the other half
   if (S.provView === 'new'  && !eff._new) return;
@@ -2825,8 +2847,6 @@ function drawEffect(eff, sx) {
   const w = Math.max(2, (eff.endTime - eff.startTime) * S.PPS);
   // Skip effects entirely off-screen
   if (x + w < 0 || x > tlCanvas.width) return;
-  const ri = trackRowOf(eff.propIdx);
-  if (ri < 0) return;  // prop is in a collapsed group — don't render
   const y = ri * TRACK_H + 1;
   const h = TRACK_H - 2;
   const sel = eff.id === S.selectedId || S.selectedIds.has(eff.id);
@@ -2931,6 +2951,7 @@ function onTLMouseDown(e) {
   const ri  = Math.floor(y / TRACK_H);
   const row = S.trackLayout[ri];
   if (!row) return;
+  S._rowContext = ri;   // which copy of a multi-group prop's row we're working in
 
   // Grab the whole multi-selection by clicking anywhere inside its marquee box.
   if (S.selectedIds.size > 1 && !e.shiftKey && inSelectionBox(x, y)) {
@@ -3118,8 +3139,7 @@ function onTLMouseUp(e) {
     const r1 = Math.floor(y1 / TRACK_H), r2 = Math.floor(y2 / TRACK_H);
     if (!e.shiftKey) S.selectedIds.clear(); // Shift keeps previous selection
     S.effects.forEach(eff => {
-      const ri = trackRowOf(eff.propIdx);
-      if (ri < r1 || ri > r2) return;
+      if (!trackRowsOf(eff.propIdx).some(ri => ri >= r1 && ri <= r2)) return;
       if (eff.endTime < t1 || eff.startTime > t2) return;
       S.selectedIds.add(eff.id);
     });
@@ -3186,6 +3206,7 @@ function onTLContextMenu(e) {
   const { x, y } = getTLCoords(e);
   const ri  = Math.floor(y / TRACK_H);
   const row = S.trackLayout[ri];
+  if (row) S._rowContext = ri;
   // Capture the clicked row + time in STABLE vars — S._tlHover keeps changing as
   // the mouse moves onto the menu item, so "Paste here" must not rely on it.
   S._ctxTargetRow  = ri;
