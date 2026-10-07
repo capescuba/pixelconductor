@@ -1074,7 +1074,7 @@ function computeSingleLineModel(m) {
     const f = (n === 1) ? 0.5 : i / (n - 1);   // endpoints inclusive, like the arch
     worldPixels.push({ wx: ax + (bx - ax) * f, wy: ay + (by - ay) * f });
   }
-  return { pixelType: 'worldspace', worldPixels,
+  return { pixelType: 'worldspace', bufferKind: 'line', worldPixels,
            centerWx: (ax + bx) / 2, centerWy: (ay + by) / 2 };
 }
 
@@ -3681,7 +3681,7 @@ function buildXSQXml() {
   xml += `  <head>\n`;
   xml += `    <version>2026.07</version>\n`;
   xml += `    <author>PixelConductor</author>\n`;
-  xml += `    <sequenceTiming>50 ms</sequenceTiming>\n`;
+  xml += `    <sequenceTiming>${S.frameMs || 50} ms</sequenceTiming>\n`;
   xml += `    <sequenceType>Media</sequenceType>\n`;
   xml += `    <mediaFile>${escXML(mediaFile)}</mediaFile>\n`;
   xml += `    <sequenceDuration>${(S.duration || 60).toFixed(3)}</sequenceDuration>\n`;
@@ -5213,6 +5213,9 @@ async function applyXSQContent(xmlText, xsqName) {
 
     // Metadata — duration and media file
     const mediaFile = doc.querySelector('mediaFile')?.textContent?.trim() || '';
+    // Frame timing ("50 ms"): xLights renders and the controller plays at this rate.
+    const fms = parseInt(doc.querySelector('sequenceTiming')?.textContent || '', 10);
+    S.frameMs = fms > 0 ? fms : 50;
     const durText   = doc.querySelector('sequenceDuration')?.textContent?.trim();
     if (durText) {
       S.duration = parseFloat(durText);
@@ -5682,14 +5685,181 @@ function _sc([r,g,b],k){return[~~(r*k),~~(g*k),~~(b*k)];}
 // On — E_SLIDER_Eff_On_Brightness=100  (all pixels solid)
 function _fxOn(col){ return _rgb3(col); }
 
-// Chase — E_SLIDER_Chase_Rotations=1, E_CHOICE_Chase_Type=Left, E_SLIDER_Chase_Width=10
-// Lit window (10% wide) sweeps pixel 0 → pixel N-1, one pass per duration
-function _fxChase(col, idx, n, el, dur) {
-  const phase = (el / dur) % 1.0;                  // 0→1 over one rotation
-  const pn    = n > 1 ? idx / (n - 1) : 0.5;       // normalised pixel position
-  let dist    = Math.abs(pn - phase);
-  if (dist > 0.5) dist = 1 - dist;                  // circular wrap
-  return dist < 0.05 ? _sc(_rgb3(col), Math.min(1, 1.15 - dist / 0.05 * 0.15)) : [0,0,0];
+// Chase — a port of xLights' SingleStrandEffect::RenderSingleStrandChase and
+// draw_chase (src-core/effects/SingleStrandEffect.cpp), driven by the effect's own
+// settings: chase type (15 modes), number of chases, chase size (Color_Mix1, % of
+// the buffer width), rotations, offset, fade type and Group All. It renders a
+// whole frame of the effect's W×H buffer; `buf` places this pixel in that buffer.
+const CHASE_TYPES = ['Left-Right', 'Right-Left', 'Bounce from Left', 'Bounce from Right',
+  'Dual Chase', 'From Middle', 'To Middle', 'Bounce to Middle', 'Bounce from Middle',
+  'Static Left-Right', 'Static Right-Left', 'Static Dual', 'Static From Middle',
+  'Static To Middle', 'Static Double-Ended'];
+const CHASE_FADES = { 'From Head': 1, 'From Tail': 2, 'Head and Tail': 3, 'Middle': 4 };
+const _chaseParamCache = new Map();
+const _chaseFrameCache = new Map();
+
+function _chaseParams(settingsStr) {
+  const key = settingsStr || '';
+  let p = _chaseParamCache.get(key);
+  if (p) return p;
+  const m = parseSettingsStr(settingsStr || effectSettings('Chase'));
+  const num = (k, d) => { const v = parseFloat(m.get(k)); return Number.isFinite(v) ? v : d; };
+  p = {
+    type:     Math.max(0, CHASE_TYPES.indexOf(m.get('E_CHOICE_Chase_Type1'))),
+    fade:     CHASE_FADES[m.get('E_CHOICE_Fade_Type')] || 0,
+    chases:   Math.max(1, Math.round(num('E_SLIDER_Number_Chases', 1))),
+    size:     num('E_SLIDER_Color_Mix1', 10),
+    speed:    num('E_TEXTCTRL_Chase_Rotations', 1) || 1,
+    offset:   num('E_TEXTCTRL_Chase_Offset', 0),
+    groupAll: m.get('E_CHECKBOX_Chase_Group_All') === '1',
+    rainbow:  m.get('E_CHOICE_SingleStrand_Colors') === 'Rainbow',
+  };
+  if (_chaseParamCache.size > 200) _chaseParamCache.clear();
+  _chaseParamCache.set(key, p);
+  return p;
+}
+
+function _rgbToHsv([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [((h * 60) + 360) % 360 / 360, max ? d / max : 0, max];   // h, s, v all 0..1
+}
+
+// One frame: per-cell colours (null = off), indexed by buffer column, or by
+// y*W + x when Group All runs the chase node by node through a 2-D buffer.
+function _chaseFrame(p, W, H, pos, baseRGB) {
+  const groupAll = p.groupAll && H > 1;
+  const total = groupAll ? W * H : W;
+  const t = p.type;
+  const forwardDir  = [0, 2, 6, 9, 13, 14].includes(t);   // xLights "ChaseDirection"
+  const Static      = t >= 9 && t <= 14;
+  const DoubleEnd   = t === 14;
+  const Mirror      = [5, 6, 12, 13].includes(t);
+  const AutoReverse = [2, 3, 7, 8].includes(t);
+  const Dual        = [4, 7, 8, 11, 14].includes(t);
+
+  let width = total;
+  if (Mirror) width = width % 2 === 0 ? width / 2 : (width + 1) / 2;
+  if (width === 0) width = 1;
+  const N = Math.max(1, p.chases);
+  let scaled = Math.trunc(width * p.size / 100);
+  if (scaled < 1) scaled = 1;
+
+  // How far through the current chase cycle we are (0..1, x2 when bouncing)
+  let rt = Static ? 0 : pos;
+  if (t === 8) { rt += 0.25 / p.speed; if (rt > 1) rt -= 1; }   // Bounce from Middle starts centred
+  rt *= p.speed;
+  rt += p.offset / 100;
+  while (rt > 1) rt -= 1;
+  while (rt < 0) rt += 1;
+  if (AutoReverse) rt *= 2;
+
+  let dx = width / N;
+  if (dx < 1) dx = 1;
+  let start;
+  if (N > 1)          start = Math.trunc(width * rt + 1);
+  else if (DoubleEnd) start = Math.trunc((width + scaled * 2 - 1) * rt + 1);
+  else { start = Math.trunc((width + scaled - 1) * rt + 1); if (rt >= 0.999999) start -= 1; }
+
+  const cells = new Array(total).fill(null);
+  const [h0, s0, v0] = p.rainbow ? [0, 1, 1] : _rgbToHsv(baseRGB);
+  const mcw = Math.max(1, Math.trunc(width * p.size / 100));
+  const middle = !p.fade ? 0 : (mcw % 2 === 0 ? Math.trunc(mcw / 2) - 1 : Math.trunc(mcw / 2));
+  let ppc = Math.trunc(width / N);
+  if (ppc < 1) ppc = 1;
+  const nPix = Math.min(mcw, ppc);
+
+  const draw = (x, forward) => {
+    let firstX = x, dir = 1;
+    if (AutoReverse) {
+      if (firstX < 0 && firstX > -mcw) { firstX = -firstX - 1; dir = -1; }
+      if (firstX < 0 || firstX >= width) {
+        let dif;
+        if (firstX < 0) { firstX = -firstX - 1; dir = -1; dif = 0; }
+        else { dif = firstX - width + 1; firstX = width; dir = -1; }
+        while (dif > 0) {
+          dif--; firstX += dir;
+          if (firstX === width - 1) dir = -1;
+          if (firstX === 0) dir = 1;
+        }
+      }
+    }
+    for (let i = 0; i < nPix; i++) {
+      const h = p.rainbow ? 1 - i / mcw : h0;
+      let v = v0;
+      let nx;
+      if (AutoReverse) {
+        nx = firstX + dir;
+        if (nx < 0) { dir = 1; nx = 0; }
+        if (nx >= width) { dir = -1; nx = width - 1; }
+        firstX = nx;
+      } else if (N > 1) {
+        nx = x + i;
+        while (nx < 0) nx += width;
+        while (nx >= width) nx -= width;
+      } else {
+        nx = x + i;
+      }
+      if (!forward) nx = width - nx - 1;
+      switch (p.fade) {
+        case 1: v = Math.max(0, v0 - (mcw - (i + 1)) / mcw); break;                       // From Head
+        case 2: v = Math.max(0, (mcw - (i + 1)) / mcw); break;                            // From Tail
+        case 3: v = i <= middle ? v0 * (1 - (2 * i) / mcw) : v0 * ((2 * (i - middle)) / mcw);
+                v = Math.min(v0, Math.max(0, v)); break;                                  // Head and Tail
+        case 4: v = i > middle ? (mcw - (i + 1)) / (0.5 * mcw) : v0 - (mcw - (2 * i + 1)) / mcw;
+                v = Math.max(0, v); break;                                                // Middle
+      }
+      if (nx < 0 || nx > width) continue;
+      let c = _hsv3(h * 360, p.rainbow ? 1 : s0, v);
+      if (p.fade >= 2 && nx < total) {   // these fades keep the brighter of overlapping heads/tails
+        const prev = cells[nx];
+        if (prev && (prev[0] || prev[1] || prev[2]))
+          c = [Math.max(c[0], prev[0]), Math.max(c[1], prev[1]), Math.max(c[2], prev[2])];
+      }
+      if (nx < total) cells[nx] = c;
+      if (Mirror && total - nx - 1 >= 0 && total - nx - 1 < total) cells[total - nx - 1] = c;
+    }
+  };
+
+  for (let k = 0; k < N; k++) {
+    const x = AutoReverse ? Math.trunc(k * dx + width * rt - scaled / 2)
+                          : Math.trunc(k * dx + start - scaled);
+    draw(DoubleEnd ? width - x - scaled : x, forwardDir !== DoubleEnd);
+    if (Dual) draw(DoubleEnd ? x - scaled : x, forwardDir === DoubleEnd);
+  }
+  return cells;
+}
+
+function _fxChase(eff, idx, n, el, dur, buf) {
+  const p = _chaseParams(eff.xlSettings);
+  const b = buf || { x: idx, y: 0, w: n, h: 1 };
+  const pos = Math.min(1, Math.max(0, el / dur));
+  const key = `${eff.xlSettings || ''}|${eff.color}|${b.w}x${b.h}|${pos.toFixed(4)}`;
+  let cells = _chaseFrameCache.get(key);
+  if (!cells) {
+    if (_chaseFrameCache.size > 256) _chaseFrameCache.clear();
+    cells = _chaseFrame(p, b.w, b.h, pos, _rgb3(eff.color));
+    _chaseFrameCache.set(key, cells);
+  }
+  const cell = (p.groupAll && b.h > 1) ? cells[b.y * b.w + b.x] : cells[b.x];
+  return cell || [0, 0, 0];
+}
+
+// xLights-style "minimal grid" buffer for a set of positions: snap them to a
+// 400-step grid (the layout GridSize) and keep only the columns and rows that hold
+// a light. Larger y = higher up. Returns {x, y, w, h} per point, y from the bottom.
+function _minimalGrid(xs, ys) {
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const span = Math.max(x1 - x0, y1 - y0) || 1;
+  const qx = xs.map(x => Math.round((x - x0) / span * 399));
+  const qy = ys.map(y => Math.round((y - y0) / span * 399));
+  const cols = [...new Set(qx)].sort((a, b) => a - b);
+  const rows = [...new Set(qy)].sort((a, b) => a - b);
+  const ci = new Map(cols.map((v, i) => [v, i])), ri = new Map(rows.map((v, i) => [v, i]));
+  return qx.map((q, k) => ({ x: ci.get(q), y: ri.get(qy[k]), w: cols.length, h: rows.length }));
 }
 
 // Color Wash — E_SLIDER_ColorWash_Count=1, HFade=0, VFade=0
@@ -5851,8 +6021,10 @@ function _fxMarquee(col, idx, n, el) {
 }
 
 // Master dispatcher — returns [r,g,b] for one pixel
-function stagePixelColor(eff, idx, n, el, dur, nx, ny) {
-  const rgb = _effectBaseColor(eff, idx, n, el, dur, nx, ny);
+function stagePixelColor(eff, idx, n, el, dur, nx, ny, buf) {
+  // buf (optional) = this pixel's place in the effect's xLights render buffer:
+  // {x, y, w, h}, y from the bottom. Effects that need real buffer geometry use it.
+  const rgb = _effectBaseColor(eff, idx, n, el, dur, nx, ny, buf);
   // Same as xLights' renderer (PixelBuffer, contrast 0): scale each channel by
   // brightness/100 and cap at 255, so >100% clips mixed colours toward white.
   const b = effBrightness(eff);
@@ -5861,10 +6033,10 @@ function stagePixelColor(eff, idx, n, el, dur, nx, ny) {
   return [Math.min(255, Math.floor(rgb[0] * k)), Math.min(255, Math.floor(rgb[1] * k)), Math.min(255, Math.floor(rgb[2] * k))];
 }
 
-function _effectBaseColor(eff, idx, n, el, dur, nx, ny) {
+function _effectBaseColor(eff, idx, n, el, dur, nx, ny, buf) {
   switch (eff.type) {
     case 'On':         return _fxOn(eff.color);
-    case 'Chase':      return _fxChase(eff.color, idx, n, el, dur);
+    case 'Chase':      return _fxChase(eff, idx, n, el, dur, buf);
     case 'Color Wash': return _fxColorWash(eff.color, el, dur, nx);
     case 'Twinkle':    return _fxTwinkle(eff.color, idx, el);
     case 'Pulse':      return _fxPulse(eff.color, el, dur);
@@ -5941,13 +6113,22 @@ function drawStageOnCanvas(canvas) {
     if (!grp) return;
     const members = grp.members.map(m => S.props.findIndex(p => p.name === m && !p.isGroup)).filter(i => i >= 0);
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0;
+    const gx = [], gy = [];
     members.forEach(mi => propStageGeometry(S.props[mi], w, h).points.forEach(pt => {
       if (pt.cx < x0) x0 = pt.cx; if (pt.cx > x1) x1 = pt.cx;
       if (pt.cy < y0) y0 = pt.cy; if (pt.cy > y1) y1 = pt.cy;
+      gx.push(pt.cx); gy.push(-pt.cy);
       n++;
     }));
     if (!n) return;
     const g = { eff: geff, x0, y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), n };
+    // The group's render buffer: a minimal grid over all member dots, like the
+    // layout's minimalGrid group buffer. Looked up by canvas position, so a member's
+    // drops (which sit on the member's own dots) find their cells too.
+    const gbuf = _minimalGrid(gx, gy), gIndex = new Map();
+    gx.forEach((x, k) => gIndex.set(Math.round(x * 4) + ',' + Math.round(-gy[k] * 4), gbuf[k]));
+    g.bufAt = (cx, cy) => gIndex.get(Math.round(cx * 4) + ',' + Math.round(cy * 4))
+      || { x: Math.round((cx - x0) / g.w * ((gbuf[0]?.w || 1) - 1)), y: 0, w: gbuf[0]?.w || 1, h: gbuf[0]?.h || 1 };
     const memberNames = new Set(members.map(mi => S.props[mi].name));
     S.props.forEach((p, pi) => {
       if (memberNames.has(p.name) || (p.isSub && memberNames.has(p.parentName)))
@@ -6016,7 +6197,8 @@ function propStageGeometry(prop, cw, ch) {
 
   // ── No model: single dot ──────────────────────────────────────────────────
   if (!prop.model) {
-    return { kind: 'dot', dotR: 10 * sc, points: [{ cx: px, cy: py, idx: 0, n: 1, nx: 0.5, ny: 0.5 }] };
+    return { kind: 'dot', dotR: 10 * sc,
+             points: [{ cx: px, cy: py, idx: 0, n: 1, nx: 0.5, ny: 0.5, buf: { x: 0, y: 0, w: 1, h: 1 } }] };
   }
 
   // ── Worldspace pixel model (Arches, Single Line, Icicles) ─────────────────
@@ -6037,7 +6219,17 @@ function propStageGeometry(prop, cw, ch) {
     }
     const { x0, y0, rx, ry } = prop.model._bbox;
 
+    // Render-buffer position per node: a single line is a 1×n strip in xLights;
+    // other worldspace models get a minimal grid of their occupied columns/rows.
+    if (!prop.model._buf) {
+      prop.model._buf = prop.model.bufferKind === 'line'
+        ? worldPixels.map((_, i) => ({ x: i, y: 0, w: n, h: 1 }))
+        : _minimalGrid(worldPixels.map(p => p.wx), worldPixels.map(p => p.wy));
+    }
+    const bufs = prop.model._buf;
+
     const points = worldPixels.map((p, idx) => ({
+      buf: bufs[idx],
       cx: (p.wx / pw) * cw,
       cy: (1 - p.wy / ph) * ch,              // Y-flip: xLights Y=0 is bottom
       idx, n,
@@ -6069,6 +6261,7 @@ function propStageGeometry(prop, cw, ch) {
   pixelCoords.forEach(p => {
     if (!p) return;
     points.push({
+      buf: { x: p.col, y: gridH - 1 - p.row, w: gridW, h: gridH },   // custom model buffer = its grid
       cx: ox + (p.col + 0.5) * cellW,
       cy: oy + (p.row + 0.5) * cellH,
       idx: points.length, n,
@@ -6080,27 +6273,39 @@ function propStageGeometry(prop, cw, ch) {
            focus: { x: ox - 2, y: oy - 2, w: gridW * cellW + 4, h: gridH * cellH + 4 } };
 }
 
+// An effect's elapsed time and duration at track time t, counted in whole frames
+// the way xLights renders: progress = (frame - firstFrame) / (lastFrame - firstFrame).
+// The stage then steps at the sequence's real playback rate, so a pattern too fast
+// for the frame rate looks the same here as on the lights.
+function effectClock(eff, t) {
+  const f = (S.frameMs || 50) / 1000;
+  const first = Math.round(eff.startTime / f);
+  const last  = Math.max(first + 1, Math.round(eff.endTime / f) - 1);
+  const cur   = Math.min(last, Math.max(first, Math.floor(t / f + 1e-6)));
+  return { el: (cur - first) * f, dur: (last - first) * f };
+}
+
 function drawStageProp(ctx, prop, eff, t, focused, cw, ch, groupFx) {
   // eff     = the prop's own effect at time t (or null/undefined)
   // groupFx = active effects on groups this prop belongs to; each renders across
   //           the whole group as one canvas: {eff, x0, y0, w, h, n} in canvas px
   // cw/ch   = target canvas dimensions (for worldspace coord mapping)
   const geo = propStageGeometry(prop, cw, ch);
-  const elapsed  = eff ? Math.max(0, t - eff.startTime) : 0;
-  const duration = eff ? Math.max(0.001, eff.endTime - eff.startTime) : 1;
+  const clk = eff ? effectClock(eff, t) : { el: 0, dur: 1 };
+  const elapsed = clk.el, duration = clk.dur;
   const lit = !!eff || !!(groupFx && groupFx.length);
 
   // A dot's colour: its own effect, lightened by any group effect over it. Model
   // and group effects both light the same channels in xLights; taking the
   // brighter of each channel approximates that layering.
   function pixelFill(pt) {
-    let rgb = eff ? stagePixelColor(eff, pt.idx, pt.n, elapsed, duration, pt.nx, pt.ny) : null;
+    let rgb = eff ? stagePixelColor(eff, pt.idx, pt.n, elapsed, duration, pt.nx, pt.ny, pt.buf) : null;
     (groupFx || []).forEach(g => {
       const gnx = Math.min(1, Math.max(0, (pt.cx - g.x0) / g.w));
       const gny = Math.min(1, Math.max(0, (pt.cy - g.y0) / g.h));
       const gidx = Math.round(gnx * (g.n - 1));   // group buffer runs left to right
-      const c = stagePixelColor(g.eff, gidx, g.n, Math.max(0, t - g.eff.startTime),
-                                Math.max(0.001, g.eff.endTime - g.eff.startTime), gnx, gny);
+      const gc = effectClock(g.eff, t);
+      const c = stagePixelColor(g.eff, gidx, g.n, gc.el, gc.dur, gnx, gny, g.bufAt(pt.cx, pt.cy));
       rgb = rgb ? [Math.max(rgb[0], c[0]), Math.max(rgb[1], c[1]), Math.max(rgb[2], c[2])] : c;
     });
     if (!rgb) return hexAlpha(prop.color, 0.35);
