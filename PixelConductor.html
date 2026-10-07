@@ -758,6 +758,12 @@ input[type=range]{accent-color:var(--accent)}
       <div class="recent-row" id="eff-recent-colors" style="margin-top:6px"></div>
     </div>
     <div class="modal-field">
+      <label>Brightness <span id="eff-bri-val" style="font-weight:400;color:var(--text-dim)">100%</span></label>
+      <input type="range" id="eff-brightness" min="0" max="400" step="5" value="100"
+             oninput="document.getElementById('eff-bri-val').textContent = this.value + '%'"
+             title="xLights palette brightness. 100% shows the colour as picked; above 100% multiplies it and clips toward white.">
+    </div>
+    <div class="modal-field">
       <label>Start Time (s)</label>
       <input type="number" id="eff-start" step="0.01">
     </div>
@@ -1128,7 +1134,9 @@ function buildTrackLayout() {
   }
 
   S.groups.forEach((grp, gi) => {
-    layout.push({ type: 'group', groupIdx: gi, name: grp.name });
+    // The header row is also the group's own effect track (its pseudo-prop).
+    const gp = S.props.findIndex(p => p.isGroup && p.name === grp.name);
+    layout.push({ type: 'group', groupIdx: gi, name: grp.name, propIdx: gp >= 0 ? gp : null });
     grp.members.forEach(mname => {
       const pi = S.props.findIndex(p => p.name === mname);
       if (pi >= 0 && !assigned.has(pi)) {
@@ -1139,7 +1147,7 @@ function buildTrackLayout() {
   });
   // Ungrouped props at the end (submodels are emitted next to their parent)
   S.props.forEach((p, pi) => {
-    if (p.isSub) return;
+    if (p.isSub || p.isGroup) return;   // groups are their header rows
     if (!assigned.has(pi)) pushProp(pi, -1, p.name);
   });
 
@@ -1148,7 +1156,33 @@ function buildTrackLayout() {
 
 // Row index for a given propIdx (-1 if hidden inside a collapsed group)
 function trackRowOf(propIdx) {
-  return S.trackLayout.findIndex(r => r.type === 'prop' && r.propIdx === propIdx);
+  if (propIdx == null || propIdx < 0) return -1;
+  return S.trackLayout.findIndex(r => r.propIdx === propIdx);
+}
+
+// A row that holds effects: a prop row, or a group header (whose effects live on
+// the group's pseudo-prop and render across all its members, like xLights).
+function isEffectRow(row) {
+  return !!row && row.propIdx != null && row.propIdx >= 0;
+}
+
+// Props a palette drop on row `ri` creates effects on. A group header gets ONE
+// group effect; with Alt held it stamps a separate copy onto each member instead
+// (members of a collapsed group included, so this goes by prop, not visible row).
+function paletteDropProps(ri, alt) {
+  const row = S.trackLayout[ri];
+  if (!row) return [];
+  if (row.type === 'group' && (alt || !isEffectRow(row)))
+    return S.groups[row.groupIdx].members
+      .map(m => S.props.findIndex(p => p.name === m && !p.isGroup))
+      .filter(pi => pi >= 0);
+  return isEffectRow(row) ? [row.propIdx] : [];
+}
+// Visible rows to highlight for that drop (the header too when copying to members).
+function paletteDropRows(ri, alt) {
+  const rows = paletteDropProps(ri, alt).map(trackRowOf).filter(r => r >= 0);
+  if (alt && S.trackLayout[ri]?.type === 'group') rows.unshift(ri);
+  return rows;
 }
 
 function buildTrackLabels() {
@@ -1210,19 +1244,8 @@ function updateDropHighlight(tlY) {
   const labels = container.children;
   for (const el of labels) el.classList.remove('drop-target');
   if (tlY == null) return;
-  const ri  = Math.floor(tlY / TRACK_H);
-  const row = S.trackLayout[ri];
-  if (!row) return;
-  const rows = [];
-  if (row.type === 'prop') {
-    rows.push(ri);
-  } else if (row.type === 'group') {
-    rows.push(ri);
-    S.groups[row.groupIdx].members.forEach(mname => {
-      const mri = trackRowOf(S.props.findIndex(p => p.name === mname));
-      if (mri >= 0) rows.push(mri);
-    });
-  }
+  const ri   = Math.floor(tlY / TRACK_H);
+  const rows = paletteDropRows(ri, !!(S.paletteDrag && S.paletteDrag.alt));
   rows.forEach(r => { if (labels[r]) labels[r].classList.add('drop-target'); });
 }
 
@@ -1631,6 +1654,7 @@ function setupEvents() {
         ev.clientY >= rect.top  && ev.clientY <= rect.bottom) {
       S.paletteDrag.tlX = ev.clientX - rect.left + rp.scrollLeft;
       S.paletteDrag.tlY = ev.clientY - rect.top;
+      S.paletteDrag.alt = ev.altKey;   // Alt over a group header = copy onto each member
       tlCanvas.style.cursor = 'copy';
       updateDropHighlight(S.paletteDrag.tlY);   // highlight the target model row label
     } else {
@@ -1665,17 +1689,8 @@ function setupEvents() {
     const endTime   = startTime + dur;
 
     const _u = _cloneEffects();
-    if (row.type === 'prop') {
-      createEffect(row.propIdx, startTime, endTime);
-    } else if (row.type === 'group') {
-      // Drop on group header — create on all member props
-      const grp = S.groups[row.groupIdx];
-      grp.members.forEach(mname => {
-        const pi = S.props.findIndex(p => p.name === mname);
-        if (pi >= 0) createEffect(pi, startTime, endTime);
-      });
-      drawTimeline();
-    }
+    paletteDropProps(ri, ev.altKey).forEach(pi => createEffect(pi, startTime, endTime));
+    drawTimeline();
     commitUndo(_u);
     tlCanvas.style.cursor = 'crosshair';
   });
@@ -2788,17 +2803,8 @@ function drawTimeline() {
     const px2 = t2 * S.PPS - sx;
     const ri  = Math.floor(S.paletteDrag.tlY / TRACK_H);
     const row = S.trackLayout[ri];
-    const rows = [];
-    if (row) {
-      if (row.type === 'prop') rows.push(ri);
-      else if (row.type === 'group') {
-        S.groups[row.groupIdx].members.forEach(mname => {
-          const pi = S.props.findIndex(p => p.name === mname);
-          const mri = trackRowOf(pi);
-          if (mri >= 0) rows.push(mri);
-        });
-      }
-    }
+    const alt  = !!S.paletteDrag.alt;
+    const rows = row ? paletteDropProps(ri, alt).map(trackRowOf).filter(r => r >= 0) : [];
     rows.forEach(r => {
       const py = r * TRACK_H + 1;
       tlCtx.fillStyle = hexAlpha(S.activeColor, .35);
@@ -2898,7 +2904,7 @@ function snapTime(t) {
 function hitTest(x, y) {
   const ri  = Math.floor(y / TRACK_H);
   const row = S.trackLayout[ri];
-  if (!row || row.type !== 'prop') return null;
+  if (!isEffectRow(row)) return null;
   const { propIdx } = row;
   const time = xToTime(x);
   // iterate reversed so topmost (last drawn) hit first
@@ -2938,7 +2944,7 @@ function onTLMouseDown(e) {
     return;
   }
 
-  if (row.type === 'group') {
+  if (row.type === 'group' && !hitTest(x, y)) {
     if (e.altKey) {
       // Alt+drag on a group header draws an effect across all its members
       S.selectedIds.clear();
@@ -3069,7 +3075,7 @@ function onTLMouseMove(e) {
       if (origRow >= 0) {
         const newRow = origRow + rowDelta;
         const tgt = S.trackLayout[newRow];
-        if (tgt && tgt.type === 'prop') eff.propIdx = tgt.propIdx;
+        if (isEffectRow(tgt)) eff.propIdx = tgt.propIdx;
       }
       if (eff.startTime < minS) minS = eff.startTime;
       if (eff.endTime   > maxE) maxE = eff.endTime;
@@ -3162,7 +3168,7 @@ function onTLMouseUp(e) {
         const pi = S.props.findIndex(p => p.name === mname);
         if (pi >= 0)
           S.effects.push({ id: S.nextId++, propIdx: pi,
-            startTime: t1, endTime: t2, type: S.activeEffect, color: S.activeColor, xlSettings: null });
+            startTime: t1, endTime: t2, type: S.activeEffect, color: S.activeColor, brightness: 100, xlSettings: null });
       });
     }
   }
@@ -3185,7 +3191,7 @@ function onTLContextMenu(e) {
   S._ctxTargetRow  = ri;
   S._ctxTargetTime = xToTime(x);
   const hit     = hitTest(x, y);
-  const onProp  = !!(row && row.type === 'prop');
+  const onProp  = isEffectRow(row);
   const canPaste = !!(S.clipboard && S.clipboard.length && onProp);
   // Is the clicked row a model (non-sub) that owns submodels? → offer "Copy model"
   S._ctxModelProp = -1;
@@ -3242,7 +3248,7 @@ function onTLDblClick(e) {
 //  EFFECTS CRUD
 // ═══════════════════════════════════════════════════════════════
 function createEffect(propIdx, startTime, endTime) {
-  S.effects.push({ id: S.nextId++, propIdx, startTime, endTime, type: S.activeEffect, color: S.activeColor, xlSettings: null });
+  S.effects.push({ id: S.nextId++, propIdx, startTime, endTime, type: S.activeEffect, color: S.activeColor, brightness: 100, xlSettings: null });
 }
 
 function deleteSelectedEffect() {
@@ -3365,6 +3371,8 @@ function openEffectModal(eff) {
   document.getElementById('eff-color-input').value = eff.color;
   document.getElementById('eff-start').value       = eff.startTime.toFixed(3);
   document.getElementById('eff-end').value         = eff.endTime.toFixed(3);
+  document.getElementById('eff-brightness').value  = effBrightness(eff);
+  document.getElementById('eff-bri-val').textContent = effBrightness(eff) + '%';
   renderRecentColors();   // refresh the modal swatch row
   renderEffectProps(eff.type, eff.xlSettings || effectSettings(eff.type));
   document.getElementById('effect-modal').classList.remove('hidden');
@@ -3390,6 +3398,7 @@ function saveEffectEdit() {
   eff.type      = newType;
   eff.xlSettings = collectEffectProps(base);   // edited params → verbatim export
   eff.color     = document.getElementById('eff-color-input').value;
+  eff.brightness = parseInt(document.getElementById('eff-brightness').value, 10);
   eff.startTime = parseFloat(document.getElementById('eff-start').value);
   eff.endTime   = parseFloat(document.getElementById('eff-end').value);
   commitUndo(_u);
@@ -3403,7 +3412,7 @@ const UNDO_MAX = 100;
 function _cloneEffects() { return S.effects.map(e => ({ ...e })); }
 function _effectsSig(list) {
   return list.length + '|' + list.map(e =>
-    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + e.color + ',' + (e.xlSettings || '')
+    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + e.color + ',' + (e.brightness ?? 100) + ',' + (e.xlSettings || '')
   ).join(';');
 }
 // Push a pre-mutation snapshot onto the undo stack — but only if the effects
@@ -3437,14 +3446,14 @@ function redo() {
 // Count prop rows strictly after fromRi up to and including toRi (skips group headers)
 function propRowDistance(fromRi, toRi) {
   let n = 0;
-  for (let i = fromRi + 1; i <= toRi; i++) if (S.trackLayout[i]?.type === 'prop') n++;
+  for (let i = fromRi + 1; i <= toRi; i++) if (isEffectRow(S.trackLayout[i])) n++;
   return n;
 }
 // Index of the nth prop row at/after startRi (n=0 → startRi itself when it's a prop)
 function propRowAtOffset(startRi, n) {
   let count = -1;
   for (let i = startRi; i < S.trackLayout.length; i++) {
-    if (S.trackLayout[i].type === 'prop' && ++count === n) return i;
+    if (isEffectRow(S.trackLayout[i]) && ++count === n) return i;
   }
   return -1;
 }
@@ -3500,7 +3509,7 @@ function copySelectedEffects() {
     const p = S.props[e.propIdx];
     const mrow = _modelRowOf(e);
     return {
-      type: e.type, color: e.color, xlSettings: e.xlSettings ?? null,
+      type: e.type, color: e.color, brightness: e.brightness ?? 100, xlSettings: e.xlSettings ?? null,
       dt:  e.startTime - minStart,          // time offset from the earliest copied effect
       dur: e.endTime - e.startTime,
       rowOffset: mrow >= 0 ? propRowDistance(minRow, mrow) : 0,  // in prop rows
@@ -3526,7 +3535,7 @@ function copyModel(propIdx) {
   if (!items.length) { flashStatus(`"${model.name}" has no effects to copy`); return; }
   const minStart = Math.min(...items.map(g => g.e.startTime));
   S.clipboard = items.map(g => ({
-    type: g.e.type, color: g.e.color, xlSettings: g.e.xlSettings ?? null,
+    type: g.e.type, color: g.e.color, brightness: g.e.brightness ?? 100, xlSettings: g.e.xlSettings ?? null,
     dt: g.e.startTime - minStart, dur: g.e.endTime - g.e.startTime,
     rowOffset: 0, subName: g.sub,
   }));
@@ -3543,7 +3552,7 @@ function pasteEffects(explicitRow, explicitTime) {
   if (!S.clipboard || !S.clipboard.length) return;
   const _pasteUndo = _cloneEffects();
   let targetRow = (explicitRow != null) ? explicitRow : (S._tlHover ? S._tlHover.rowIdx : -1);
-  if (!S.trackLayout[targetRow] || S.trackLayout[targetRow].type !== 'prop') {
+  if (!isEffectRow(S.trackLayout[targetRow])) {
     const sel = S.effects.find(e => e.id === S.selectedId);
     targetRow = sel ? trackRowOf(sel.propIdx) : -1;
   }
@@ -3578,7 +3587,7 @@ function pasteEffects(explicitRow, explicitTime) {
     if (pi < 0) return;
     const start = Math.max(0, base + c.dt);     // preserve the set's internal spacing
     const id = S.nextId++;
-    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, xlSettings: c.xlSettings ?? null });
+    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
     newIds.push(id);
   });
   if (!newIds.length) return;
@@ -3653,16 +3662,19 @@ function buildXSQXml() {
   xml += `    <imageDir></imageDir>\n`;
   xml += `  </head>\n`;
   // ── Build deduped color palette table ─────────────────────────────────────
-  // xLights ColorPalettes: one <ColorPalette> entry per unique colour;
-  // each <Effect> references its colour by 0-based index.
-  const paletteMap = new Map();   // hex → index
+  // xLights ColorPalettes: one <ColorPalette> entry per unique colour AND
+  // brightness (brightness lives in the palette); each <Effect> references its
+  // palette by 0-based index.
+  const paletteKey = eff => (eff.color || '#ffffff').toUpperCase() + '|' + effBrightness(eff);
+  const paletteMap = new Map();   // "HEX|brightness" → index
   S.effects.forEach(eff => {
-    const hex = (eff.color || '#ffffff').toUpperCase();
-    if (!paletteMap.has(hex)) paletteMap.set(hex, paletteMap.size);
+    const key = paletteKey(eff);
+    if (!paletteMap.has(key)) paletteMap.set(key, paletteMap.size);
   });
 
   xml += `  <ColorPalettes>\n`;
-  paletteMap.forEach((idx, hex) => {
+  paletteMap.forEach((idx, key) => {
+    const [hex, bri] = key.split('|');
     // C_BUTTON_Palette1 is the foreground colour; Palette1 enabled, rest black/off
     xml += `    <ColorPalette>C_BUTTON_Palette1=${hex},C_BUTTON_Palette2=#000000,` +
            `C_BUTTON_Palette3=#000000,C_BUTTON_Palette4=#000000,` +
@@ -3672,7 +3684,7 @@ function buildXSQXml() {
            `C_CHECKBOX_Palette1=1,C_CHECKBOX_Palette2=0,C_CHECKBOX_Palette3=0,` +
            `C_CHECKBOX_Palette4=0,C_CHECKBOX_Palette5=0,C_CHECKBOX_Palette6=0,` +
            `C_CHECKBOX_Palette7=0,C_CHECKBOX_Palette8=0,` +
-           `C_SLIDER_Brightness=400,C_SLIDER_SparkleFrequency=0</ColorPalette>\n`;
+           `C_SLIDER_Brightness=${bri},C_SLIDER_SparkleFrequency=0</ColorPalette>\n`;
   });
   xml += `  </ColorPalettes>\n`;
 
@@ -3713,7 +3725,7 @@ function buildXSQXml() {
     xml += `    <Element collapsed="false" type="model" name="${escXML(grp.name)}" visible="true" />\n`;
   });
   S.props.forEach(prop => {
-    if (prop.isSub) return;  // submodels are nested under their parent, not listed here
+    if (prop.isSub || prop.isGroup) return;  // submodels nest under their parent; groups are listed above
     xml += `    <Element collapsed="false" type="model" name="${escXML(prop.name)}" visible="true" />\n`;
   });
   (S.timingTracks || []).forEach(t => {
@@ -3726,8 +3738,7 @@ function buildXSQXml() {
   function emitEffect(eff, idx, indent) {
     const st  = Math.round(eff.startTime * 1000);
     const et  = Math.round(eff.endTime   * 1000);
-    const hex = (eff.color || '#ffffff').toUpperCase();
-    const pal = paletteMap.get(hex) ?? 0;
+    const pal = paletteMap.get(paletteKey(eff)) ?? 0;
     const idAttr = idx === 0 ? '' : ` id="${idx}"`;
     const refIdx = effRef.get(eff.id) ?? 0;
     const xlName = XLIGHTS_EFFECT_NAME[eff.type] || eff.type;
@@ -3766,12 +3777,15 @@ function buildXSQXml() {
 
   xml += `  <ElementEffects>\n`;
 
-  // Groups — empty EffectLayers (user can sequence them directly in xLights)
-  S.groups.forEach(grp => emitElement(grp.name, [], []));
+  // Groups — effects placed on the group itself (rendered across its members)
+  S.groups.forEach(grp => {
+    const gi = S.props.findIndex(p => p.isGroup && p.name === grp.name);
+    emitElement(grp.name, gi >= 0 ? S.effects.filter(e => e.propIdx === gi) : [], []);
+  });
 
   // Individual models with their effects + nested submodel (drop) effects
   S.props.forEach((prop, pi) => {
-    if (prop.isSub) return;  // emitted nested under its parent model
+    if (prop.isSub || prop.isGroup) return;  // nested under its parent / emitted with the groups
     const mainEffs = S.effects.filter(e => e.propIdx === pi);
     const subs = (subIdxOf[pi] || []).map(si => ({
       subName: S.props[si].subName,
@@ -4310,7 +4324,7 @@ Rules:
     const newEffects = JSON.parse(jsonMatch[0]);
 
     if (confirm(`Claude suggested ${newEffects.length} effects. Replace current sequence?`)) {
-      S.effects = newEffects.map(e => ({ ...e, id: S.nextId++, xlSettings: null }));
+      S.effects = newEffects.map(e => ({ ...e, id: S.nextId++, brightness: 100, xlSettings: null }));
       drawTimeline();
     }
   } catch (err) {
@@ -4949,6 +4963,19 @@ function parsePaletteColor(str) {
   return m ? '#' + m[1] : '#7c5ce4';
 }
 
+// An effect's brightness in percent; effects saved before brightness existed have none.
+function effBrightness(eff) {
+  const b = eff && eff.brightness;
+  return Number.isFinite(b) ? Math.max(0, Math.min(400, Math.round(b))) : 100;
+}
+
+// xLights keeps an effect's brightness (0-400%) in its color palette, not in the
+// effect settings, and omits the key when it is the default 100.
+function parsePaletteBrightness(str) {
+  const m = str.match(/C_SLIDER_Brightness=(\d+)/);
+  return m ? Math.max(0, Math.min(400, parseInt(m[1]))) : 100;
+}
+
 // True when an On effect's settings carry a Pulse envelope: either a brightness
 // ramp (Eff_On_Start != Eff_On_End) or symmetric fade transitions (T_ fades > 0).
 // Kept in sync with effectSettings('Pulse').
@@ -5072,8 +5099,9 @@ async function applyXSQContent(xmlText, xsqName) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
 
     // Palettes array
-    const palettes = [...doc.querySelectorAll('ColorPalettes > ColorPalette')]
-      .map(p => parsePaletteColor(p.textContent));
+    const paletteEls = [...doc.querySelectorAll('ColorPalettes > ColorPalette')];
+    const palettes   = paletteEls.map(p => parsePaletteColor(p.textContent));
+    const paletteBri = paletteEls.map(p => parsePaletteBrightness(p.textContent));
 
     // EffectDB: positional array of raw settings strings; each timeline effect's
     // ref="N" indexes into this. Carries the params that distinguish e.g.
@@ -5099,6 +5127,7 @@ async function applyXSQContent(xmlText, xsqName) {
     S.selectedId = null;
     S.undoStack = []; S.redoStack = [];   // fresh undo history per sequence
     S._pendingSubEffects = [];   // drop effects, resolved after sub props are built
+    S._pendingGroupEffects = []; // group effects, resolved after group pseudo-props are built
     const parseEff = (eff) => {
       const palIdx   = parseInt(eff.getAttribute('palette') || '0');
       const refIdx   = parseInt(eff.getAttribute('ref') || '-1');
@@ -5108,6 +5137,7 @@ async function applyXSQContent(xmlText, xsqName) {
         start: parseInt(eff.getAttribute('startTime') || '0') / 1000,
         end:   parseInt(eff.getAttribute('endTime')   || '0') / 1000,
         color: palettes[palIdx] || '#7c5ce4',
+        brightness: paletteBri[palIdx] ?? 100,
         type:  mapEffectName(name, settings),   // settings-aware: recovers Rainbow/Pulse
         xlSettings: settings || null,           // preserved verbatim for re-export
       };
@@ -5115,12 +5145,21 @@ async function applyXSQContent(xmlText, xsqName) {
     doc.querySelectorAll('ElementEffects > Element[type="model"]').forEach(modelEl => {
       const parentName = modelEl.getAttribute('name');
       const propIdx = S.props.findIndex(p => p.name === parentName);
+      // Effects placed on a group (xLights renders them across all members).
+      // Groups aren't props yet, so stage them until their pseudo-props exist.
+      if (propIdx < 0 && S.groups.some(g => g.name === parentName)) {
+        modelEl.querySelectorAll(':scope > EffectLayer > Effect').forEach(eff => {
+          const e = parseEff(eff);
+          if (e.end > e.start)
+            S._pendingGroupEffects.push({ groupName: parentName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
+        });
+      }
       // Whole-model effects (direct EffectLayer only, not nested submodel layers)
       if (propIdx >= 0) {
         modelEl.querySelectorAll(':scope > EffectLayer > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, xlSettings: e.xlSettings });
+            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       }
       // Submodel (drop) effects — parent prop's sub props don't exist yet
@@ -5129,7 +5168,7 @@ async function applyXSQContent(xmlText, xsqName) {
         sml.querySelectorAll(':scope > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, xlSettings: e.xlSettings });
+            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       });
     });
@@ -5277,7 +5316,7 @@ async function loadShowLayout() {
     // Drop group-header names and stale submodel props (submodels are rebuilt
     // fresh below; their names were captured in _oldIdxToName above so effects
     // still remap correctly).
-    S.props = S.props.filter(p => !groupNames.has(p.name) && !p.isSub);
+    S.props = S.props.filter(p => !groupNames.has(p.name) && !p.isSub && !p.isGroup);
 
     // Add any group members that are missing from S.props
     // (e.g. props that exist in the show layout but have no effects in the loaded XSQ)
@@ -5294,6 +5333,9 @@ async function loadShowLayout() {
     // Rebuild submodel pseudo-props before the effect remap so effects placed on
     // a drop (keyed by name like "Icicles 1/Drop 1") resolve to the new index.
     buildSubModelProps(layout);
+    // Group pseudo-props share their group's name, so effects that were on a
+    // group (or on a same-named prop before groups were known) remap onto them.
+    buildGroupProps();
 
     // ── Remap S.effects propIdx using name lookup (fixes index shift after filter) ──
     const _newNameToIdx = new Map(S.props.map((p, i) => [p.name, i]));
@@ -5305,7 +5347,7 @@ async function loadShowLayout() {
         return acc;
       }
       const newIdx = _newNameToIdx.get(name);
-      if (newIdx === undefined) return acc;  // prop is now a group header — drop effect
+      if (newIdx === undefined) return acc;  // prop no longer exists in the layout
       acc.push(newIdx === eff.propIdx ? eff : { ...eff, propIdx: newIdx });
       return acc;
     }, []);
@@ -5316,9 +5358,17 @@ async function loadShowLayout() {
       S._pendingSubEffects.forEach(pe => {
         const idx = nameToIdx.get(pe.parentName + '/' + pe.subName);
         if (idx !== undefined)
-          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, xlSettings: pe.xlSettings });
+          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, brightness: pe.brightness, xlSettings: pe.xlSettings });
       });
       S._pendingSubEffects = [];
+    }
+    if (S._pendingGroupEffects && S._pendingGroupEffects.length) {
+      S._pendingGroupEffects.forEach(pe => {
+        const idx = S.props.findIndex(p => p.isGroup && p.name === pe.groupName);
+        if (idx >= 0)
+          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, brightness: pe.brightness, xlSettings: pe.xlSettings });
+      });
+      S._pendingGroupEffects = [];
     }
 
     // Always reset prop colors to white — the show layout carries no color info,
@@ -5351,6 +5401,13 @@ async function loadShowLayout() {
       const n  = modelNodeCount(p.model);
       const ch = n > 0 ? n * 3 : modelChannelCount(layout.models.find(m => m.name === p.name));
       if (ch > 0) p.ch = ch;
+    });
+    // A group's footprint is its members' combined channels.
+    S.props.forEach(p => {
+      if (!p.isGroup) return;
+      const grp = S.groups.find(g => g.name === p.name);
+      p.ch = (grp ? grp.members : []).reduce((sum, m) =>
+        sum + ((S.props.find(q => q.name === m && !q.isGroup) || {}).ch || 0), 0);
     });
     applyLayoutPositions();     // set stageX/stageY from world coords
 
@@ -5479,6 +5536,9 @@ function applyModelLibrary() {
 // ── SubModels ────────────────────────────────────────────────────────────────
 // A submodel lights a subset of its parent model's nodes. We represent each as a
 // pseudo-prop (isSub) so it reuses the existing effect / timeline / export paths.
+//
+// Groups get the same treatment: one isGroup pseudo-prop per show-layout group,
+// named like the group, holding the effects placed on the group itself.
 
 // Derive a submodel's drawable geometry from the parent model + 1-based node list.
 function buildSubModelGeometry(parentModel, nodes) {
@@ -5502,6 +5562,13 @@ function buildSubModelGeometry(parentModel, nodes) {
 }
 
 // Create submodel pseudo-props (names only; geometry attached once modelLibrary exists).
+function buildGroupProps() {
+  S.groups.forEach(grp => {
+    if (S.props.some(p => p.isGroup && p.name === grp.name)) return;
+    S.props.push({ name: grp.name, isGroup: true, color: '#ffffff', ch: 0, model: null });
+  });
+}
+
 function buildSubModelProps(layout) {
   const realNames = new Set(S.props.filter(p => !p.isSub).map(p => p.name));
   (layout.models || []).forEach(m => {
@@ -5759,6 +5826,16 @@ function _fxMarquee(col, idx, n, el) {
 
 // Master dispatcher — returns [r,g,b] for one pixel
 function stagePixelColor(eff, idx, n, el, dur, nx, ny) {
+  const rgb = _effectBaseColor(eff, idx, n, el, dur, nx, ny);
+  // Same as xLights' renderer (PixelBuffer, contrast 0): scale each channel by
+  // brightness/100 and cap at 255, so >100% clips mixed colours toward white.
+  const b = effBrightness(eff);
+  if (b === 100) return rgb;
+  const k = b / 100;
+  return [Math.min(255, Math.floor(rgb[0] * k)), Math.min(255, Math.floor(rgb[1] * k)), Math.min(255, Math.floor(rgb[2] * k))];
+}
+
+function _effectBaseColor(eff, idx, n, el, dur, nx, ny) {
   switch (eff.type) {
     case 'On':         return _fxOn(eff.color);
     case 'Chase':      return _fxChase(eff.color, idx, n, el, dur);
@@ -5815,8 +5892,8 @@ function drawStageOnCanvas(canvas) {
   const t = currentTrackTime();
   // "active only": show only props that are LIT right now (have an effect at time t)
   const activeOnly = S.stageActiveOnly;
-  S.props.forEach((prop, i) => {
-    // Grid/custom submodels position off their parent (worldspace ones use world coords)
+  // Grid/custom submodels position off their parent (worldspace ones use world coords)
+  S.props.forEach(prop => {
     if (prop.isSub && prop.model && prop.model.pixelType !== 'worldspace') {
       const par = S.props.find(q => !q.isSub && q.name === prop.parentName);
       if (par) {
@@ -5825,9 +5902,39 @@ function drawStageOnCanvas(canvas) {
         prop._cellW = par._cellW; prop._cellH = par._cellH;
       }
     }
+  });
+
+  // An effect on a group renders across all its members as ONE canvas, like
+  // xLights: size it to the bounding box of every member dot, then hand it to
+  // each member (and the member's drops) to draw.
+  const groupFxOf = new Map();   // propIdx → [{eff, x0, y0, w, h, n}]
+  S.props.forEach((gp, gi) => {
+    if (!gp.isGroup) return;
+    const geff = S.effects.find(e => e.propIdx === gi && t >= e.startTime && t < e.endTime);
+    const grp  = geff && S.groups.find(g => g.name === gp.name);
+    if (!grp) return;
+    const members = grp.members.map(m => S.props.findIndex(p => p.name === m && !p.isGroup)).filter(i => i >= 0);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0;
+    members.forEach(mi => propStageGeometry(S.props[mi], w, h).points.forEach(pt => {
+      if (pt.cx < x0) x0 = pt.cx; if (pt.cx > x1) x1 = pt.cx;
+      if (pt.cy < y0) y0 = pt.cy; if (pt.cy > y1) y1 = pt.cy;
+      n++;
+    }));
+    if (!n) return;
+    const g = { eff: geff, x0, y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), n };
+    const memberNames = new Set(members.map(mi => S.props[mi].name));
+    S.props.forEach((p, pi) => {
+      if (memberNames.has(p.name) || (p.isSub && memberNames.has(p.parentName)))
+        (groupFxOf.get(pi) || groupFxOf.set(pi, []).get(pi)).push(g);
+    });
+  });
+
+  S.props.forEach((prop, i) => {
+    if (prop.isGroup) return;   // drawn through its members
     const eff = S.effects.find(e => e.propIdx === i && t >= e.startTime && t < e.endTime);
-    if (activeOnly && !eff) return;   // not lit at the current time → hidden
-    drawStageProp(ctx, prop, eff, t, i === S.stageFocusProp, w, h);
+    const gfx = groupFxOf.get(i);
+    if (activeOnly && !eff && !gfx) return;   // not lit at the current time → hidden
+    drawStageProp(ctx, prop, eff, t, i === S.stageFocusProp, w, h, gfx);
   });
 }
 
@@ -5869,49 +5976,29 @@ function drawStage() {
   }
 }
 
-function drawStageProp(ctx, prop, eff, t, focused, cw, ch) {
-  // eff = current effect object (or null/undefined when no effect active at time t)
-  // t   = current track time (seconds)
-  // cw/ch = target canvas dimensions (for worldspace coord mapping)
+// Canvas-space dots for a prop, in wire order: points [{cx, cy, idx, n, nx, ny}]
+// plus what the renderer needs (dot radius, focus box). Shared by drawStageProp
+// and by group effects, which need every member's dots to size their canvas.
+function propStageGeometry(prop, cw, ch) {
   const mainCanvas = document.getElementById('stage-canvas');
   const scaleX = (mainCanvas && cw) ? cw / mainCanvas.width  : 1;
   const scaleY = (mainCanvas && ch) ? ch / mainCanvas.height : 1;
   const px = (prop.stageX ?? 0) * scaleX;
   const py = (prop.stageY ?? 0) * scaleY;
   const sc = (prop.stageScale ?? 1) * scaleX;
-
-  const elapsed  = eff ? Math.max(0, t - eff.startTime) : 0;
-  const duration = eff ? Math.max(0.001, eff.endTime - eff.startTime) : 1;
-
-  // Helper: convert stagePixelColor result to CSS rgba string
-  function pixelFill(idx, n, nx, ny) {
-    if (!eff) return hexAlpha(prop.color, 0.35);
-    const [r, g, b] = stagePixelColor(eff, idx, n, elapsed, duration, nx, ny);
-    return `rgba(${r},${g},${b},0.9)`;
-  }
+  const dotR = Math.max(1.5, (cw || 500) * 0.0015);
 
   // ── No model: single dot ──────────────────────────────────────────────────
   if (!prop.model) {
-    const r = 10 * sc;
-    ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
-    ctx.fillStyle = pixelFill(0, 1, 0.5, 0.5);
-    ctx.fill();
-    if (focused || !eff) {
-      ctx.strokeStyle = focused ? '#fff' : hexAlpha(prop.color, 0.7);
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    }
-    return;
+    return { kind: 'dot', dotR: 10 * sc, points: [{ cx: px, cy: py, idx: 0, n: 1, nx: 0.5, ny: 0.5 }] };
   }
 
-  // ── Worldspace pixel model (Arches, Icicles) ─────────────────────────────
+  // ── Worldspace pixel model (Arches, Single Line, Icicles) ─────────────────
   if (prop.model.pixelType === 'worldspace') {
     const { worldPixels } = prop.model;
     const n  = worldPixels.length;
     const pw = S.showLayout?.previewWidth  || 1280;
     const ph = S.showLayout?.previewHeight || 720;
-    const dotR = Math.max(1.5, (cw || 500) * 0.0015);
 
     // Cache bounding box for nx/ny normalization
     if (!prop.model._bbox) {
@@ -5924,30 +6011,20 @@ function drawStageProp(ctx, prop, eff, t, focused, cw, ch) {
     }
     const { x0, y0, rx, ry } = prop.model._bbox;
 
-    worldPixels.forEach((p, idx) => {
-      const nx = (p.wx - x0) / rx;
-      const ny = 1 - (p.wy - y0) / ry;  // ny=0 top (high wy), ny=1 bottom (low wy)
-      const cx = (p.wx / pw) * cw;
-      const cy = (1 - p.wy / ph) * ch;  // Y-flip: xLights Y=0 is bottom
-      ctx.beginPath();
-      ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-      ctx.fillStyle = pixelFill(idx, n, nx, ny);
-      ctx.fill();
-    });
-
-    if (focused) {
-      const lx = (prop.model.centerWx / pw) * cw;
-      const ly = (1 - prop.model.centerWy / ph) * ch;
-      ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(lx - 20, ly - 20, 40, 40);
-    }
-    return;
+    const points = worldPixels.map((p, idx) => ({
+      cx: (p.wx / pw) * cw,
+      cy: (1 - p.wy / ph) * ch,              // Y-flip: xLights Y=0 is bottom
+      idx, n,
+      nx: (p.wx - x0) / rx,
+      ny: 1 - (p.wy - y0) / ry,              // ny=0 top (high wy), ny=1 bottom (low wy)
+    }));
+    const lx = (prop.model.centerWx / pw) * cw;
+    const ly = (1 - prop.model.centerWy / ph) * ch;
+    return { kind: 'world', dotR, points, focus: { x: lx - 20, y: ly - 20, w: 40, h: 40 } };
   }
 
   // ── Grid / Custom model ───────────────────────────────────────────────────
   const { gridW, gridH, pixelCoords } = prop.model;
-
   const userSc = prop.stageScale ?? 1;
   let cellW, cellH;
   if (prop._cellW != null) {
@@ -5957,30 +6034,78 @@ function drawStageProp(ctx, prop, eff, t, focused, cw, ch) {
     const cellSize = Math.min(90 / gridW, 90 / gridH) * sc;
     cellW = cellH = cellSize;
   }
+  const ox = px - (gridW * cellW) / 2;
+  const oy = py - (gridH * cellH) / 2;
 
-  const dotR = Math.max(1.5, (cw || 500) * 0.0015);
-  const ox   = px - (gridW * cellW) / 2;
-  const oy   = py - (gridH * cellH) / 2;
-
-  // Count valid (non-null) pixels for per-pixel index
+  // Wire index skips null holes in the grid
   const n = pixelCoords.filter(Boolean).length;
-  let wirIdx = 0;  // wire pixel index (skips null holes)
-
+  const points = [];
   pixelCoords.forEach(p => {
     if (!p) return;
-    const nx = gridW > 1 ? p.col / (gridW - 1) : 0.5;
-    const ny = gridH > 1 ? p.row / (gridH - 1) : 0.5;
+    points.push({
+      cx: ox + (p.col + 0.5) * cellW,
+      cy: oy + (p.row + 0.5) * cellH,
+      idx: points.length, n,
+      nx: gridW > 1 ? p.col / (gridW - 1) : 0.5,
+      ny: gridH > 1 ? p.row / (gridH - 1) : 0.5,
+    });
+  });
+  return { kind: 'grid', dotR, points,
+           focus: { x: ox - 2, y: oy - 2, w: gridW * cellW + 4, h: gridH * cellH + 4 } };
+}
+
+function drawStageProp(ctx, prop, eff, t, focused, cw, ch, groupFx) {
+  // eff     = the prop's own effect at time t (or null/undefined)
+  // groupFx = active effects on groups this prop belongs to; each renders across
+  //           the whole group as one canvas: {eff, x0, y0, w, h, n} in canvas px
+  // cw/ch   = target canvas dimensions (for worldspace coord mapping)
+  const geo = propStageGeometry(prop, cw, ch);
+  const elapsed  = eff ? Math.max(0, t - eff.startTime) : 0;
+  const duration = eff ? Math.max(0.001, eff.endTime - eff.startTime) : 1;
+  const lit = !!eff || !!(groupFx && groupFx.length);
+
+  // A dot's colour: its own effect, lightened by any group effect over it. Model
+  // and group effects both light the same channels in xLights; taking the
+  // brighter of each channel approximates that layering.
+  function pixelFill(pt) {
+    let rgb = eff ? stagePixelColor(eff, pt.idx, pt.n, elapsed, duration, pt.nx, pt.ny) : null;
+    (groupFx || []).forEach(g => {
+      const gnx = Math.min(1, Math.max(0, (pt.cx - g.x0) / g.w));
+      const gny = Math.min(1, Math.max(0, (pt.cy - g.y0) / g.h));
+      const gidx = Math.round(gnx * (g.n - 1));   // group buffer runs left to right
+      const c = stagePixelColor(g.eff, gidx, g.n, Math.max(0, t - g.eff.startTime),
+                                Math.max(0.001, g.eff.endTime - g.eff.startTime), gnx, gny);
+      rgb = rgb ? [Math.max(rgb[0], c[0]), Math.max(rgb[1], c[1]), Math.max(rgb[2], c[2])] : c;
+    });
+    if (!rgb) return hexAlpha(prop.color, 0.35);
+    return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.9)`;
+  }
+
+  if (geo.kind === 'dot') {
+    const pt = geo.points[0];
     ctx.beginPath();
-    ctx.arc(ox + (p.col + 0.5) * cellW, oy + (p.row + 0.5) * cellH, dotR, 0, Math.PI * 2);
-    ctx.fillStyle = pixelFill(wirIdx, n, nx, ny);
+    ctx.arc(pt.cx, pt.cy, geo.dotR, 0, Math.PI * 2);
+    ctx.fillStyle = pixelFill(pt);
     ctx.fill();
-    wirIdx++;
+    if (focused || !lit) {
+      ctx.strokeStyle = focused ? '#fff' : hexAlpha(prop.color, 0.7);
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+    }
+    return;
+  }
+
+  geo.points.forEach(pt => {
+    ctx.beginPath();
+    ctx.arc(pt.cx, pt.cy, geo.dotR, 0, Math.PI * 2);
+    ctx.fillStyle = pixelFill(pt);
+    ctx.fill();
   });
 
-  if (focused) {
+  if (focused && geo.focus) {
     ctx.strokeStyle = 'rgba(255,255,255,0.3)';
     ctx.lineWidth = 1;
-    ctx.strokeRect(ox - 2, oy - 2, gridW * cellW + 4, gridH * cellH + 4);
+    ctx.strokeRect(geo.focus.x, geo.focus.y, geo.focus.w, geo.focus.h);
   }
 }
 
@@ -6043,6 +6168,7 @@ function stageCoords(e) {
 function nearestProp(mx, my, threshold) {
   let best = -1, bestD = threshold;
   S.props.forEach((prop, i) => {
+    if (prop.isGroup) return;
     const dx = mx - (prop.stageX ?? 0), dy = my - (prop.stageY ?? 0);
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < bestD) { bestD = d; best = i; }
@@ -6697,7 +6823,7 @@ function extRender() {
   const box = document.getElementById('ext-rows');
   if (!box) return;
   box.innerHTML = '';
-  const models = S.props.filter(p => !p.isSub).map(p => p.name);
+  const models = S.props.filter(p => !p.isSub && !p.isGroup).map(p => p.name);
   (E.plan ? E.plan.sections : []).forEach((sec, i) => {
     const row = document.createElement('div');
     row.className = 'ext-row' + (i === E.sel ? ' sel' : '');
@@ -6749,7 +6875,7 @@ function extSetMode(i, mode) {
   sec.mode = mode;
   delete sec.note;   // the proposer's note described the old mode
   if (mode === 'tile' && !sec.cell_beats) sec.cell_beats = 16;
-  if (mode === 'extend' && !sec.model) sec.model = (S.props.find(p => !p.isSub) || {}).name;
+  if (mode === 'extend' && !sec.model) sec.model = (S.props.find(p => !p.isSub && !p.isGroup) || {}).name;
   extRender(); extDryRun();
 }
 
@@ -6791,7 +6917,7 @@ function extToggleBeats() {
 function extChips(i, key) {
   const sec = S.extend.plan.sections[i];
   const cur = new Set(sec[key] || []);
-  const models = S.props.filter(p => !p.isSub).map(p => p.name);
+  const models = S.props.filter(p => !p.isSub && !p.isGroup).map(p => p.name);
   const ov = document.createElement('div');
   ov.className = 'modal-overlay';
   ov.onclick = e => { if (e.target === ov) ov.remove(); };
