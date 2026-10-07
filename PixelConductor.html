@@ -746,7 +746,8 @@ input[type=range]{accent-color:var(--accent)}
 <!-- EFFECT EDIT MODAL -->
 <div id="effect-modal" class="modal-overlay hidden" onclick="if(event.target===this)this.classList.add('hidden')">
   <div class="modal">
-    <h3>Edit Effect</h3>
+    <h3 id="eff-modal-title">Edit Effect</h3>
+    <div class="modal-hint" id="eff-multi-hint" style="margin:-6px 0 12px"></div>
     <div class="modal-field">
       <label>Effect Type</label>
       <select id="eff-type-sel" onchange="onEffectTypeChange()"></select>
@@ -776,7 +777,7 @@ input[type=range]{accent-color:var(--accent)}
       <div id="eff-props"></div>
     </div>
     <div class="modal-actions">
-      <button class="mbtn danger" onclick="deleteSelectedEffect()">Delete</button>
+      <button class="mbtn danger" id="eff-delete-btn" onclick="deleteSelectedEffect()">Delete</button>
       <div style="flex:1"></div>
       <button class="mbtn" onclick="document.getElementById('effect-modal').classList.add('hidden')">Cancel</button>
       <button class="mbtn primary" onclick="saveEffectEdit()">Save</button>
@@ -3279,10 +3280,13 @@ function createEffect(propIdx, startTime, endTime) {
 }
 
 function deleteSelectedEffect() {
+  const modalOpen = !document.getElementById('effect-modal').classList.contains('hidden');
+  const many = modalOpen && S._editIds && S._editIds.length > 1 ? new Set(S._editIds) : null;
   const id = S.ctxEffectId || S.selectedId;
-  if (!id) return;
+  if (!id && !many) return;
   const _u = _cloneEffects();
-  S.effects = S.effects.filter(e => e.id !== id);
+  S.effects = S.effects.filter(e => many ? !many.has(e.id) : e.id !== id);
+  if (many) { S.selectedIds.clear(); S._editIds = []; }
   commitUndo(_u);
   S.selectedId = null; S.ctxEffectId = null;
   document.getElementById('ctx-menu').classList.add('hidden');
@@ -3391,18 +3395,57 @@ function collectEffectProps(baseStr) {
 function onEffectTypeChange() {
   const t = document.getElementById('eff-type-sel').value;
   renderEffectProps(t, effectSettings(t));
+  _updateMultiEditHint();
 }
 
 function openEffectModal(eff) {
+  // Opening an effect that's part of a multi-selection edits the whole selection:
+  // the dialog shows this effect, and Save applies only the fields you change.
+  const multi = S.selectedIds.size > 1 && S.selectedIds.has(eff.id);
+  S._editIds = multi ? [...S.selectedIds] : [eff.id];
+  S._editPrimary = eff.id;
   document.getElementById('eff-type-sel').value   = eff.type;
   document.getElementById('eff-color-input').value = eff.color;
   document.getElementById('eff-start').value       = eff.startTime.toFixed(3);
   document.getElementById('eff-end').value         = eff.endTime.toFixed(3);
   document.getElementById('eff-brightness').value  = effBrightness(eff);
   document.getElementById('eff-bri-val').textContent = effBrightness(eff) + '%';
+  // Giving every selected effect the same start/end would stack them — timing
+  // stays per-effect in a multi-edit.
+  document.getElementById('eff-start').disabled = multi;
+  document.getElementById('eff-end').disabled   = multi;
+  document.getElementById('eff-modal-title').textContent = multi ? `Edit ${S._editIds.length} effects` : 'Edit Effect';
+  document.getElementById('eff-delete-btn').textContent  = multi ? `Delete ${S._editIds.length}` : 'Delete';
   renderRecentColors();   // refresh the modal swatch row
   renderEffectProps(eff.type, eff.xlSettings || effectSettings(eff.type));
+  S._editInit = { color: eff.color.toLowerCase(), bri: effBrightness(eff), props: _readPropControls() };
+  _updateMultiEditHint();
   document.getElementById('effect-modal').classList.remove('hidden');
+}
+
+// Current value of each property control, keyed by settings key.
+function _readPropControls() {
+  const m = new Map();
+  document.querySelectorAll('#eff-props [data-key]').forEach(el =>
+    m.set(el.dataset.key, el.dataset.ptype === 'check' ? (el.checked ? '1' : '0') : el.value));
+  return m;
+}
+
+// Explain what a multi-edit will touch.
+function _updateMultiEditHint() {
+  const hint = document.getElementById('eff-multi-hint');
+  const ids = S._editIds || [];
+  if (ids.length < 2) { hint.textContent = ''; return; }
+  const primary = S.effects.find(e => e.id === S._editPrimary);
+  const newType = document.getElementById('eff-type-sel').value;
+  if (primary && newType !== primary.type) {
+    hint.textContent = `Save turns all ${ids.length} into ${newType} effects with these properties. Timing is left as is.`;
+    return;
+  }
+  const same = S.effects.filter(e => ids.includes(e.id) && primary && e.type === primary.type).length;
+  hint.textContent = `Changes you make apply to all ${ids.length}. ` +
+    (same < ids.length ? `Properties apply to the ${same} ${primary.type} effects. ` : '') +
+    'Timing is left as is.';
 }
 
 function editEffectFromCtx() {
@@ -3412,7 +3455,9 @@ function editEffectFromCtx() {
 }
 
 function saveEffectEdit() {
-  const id  = S.selectedId;
+  const ids = S._editIds || [];
+  if (ids.length > 1) { _saveMultiEffectEdit(); return; }
+  const id  = S._editPrimary ?? S.selectedId;
   const eff = S.effects.find(e => e.id === id);
   if (!eff) return;
   const _u = _cloneEffects();
@@ -3432,6 +3477,48 @@ function saveEffectEdit() {
   pushRecentColor(eff.color);
   document.getElementById('effect-modal').classList.add('hidden');
   drawTimeline();
+}
+
+// Multi-selection save: apply only the fields that changed in the dialog.
+//  · Type changed  → every selected effect becomes that type, with these properties.
+//  · Properties    → changed keys merge into each selected effect of the SAME type
+//                    as the one opened (other keys keep their per-effect values).
+//  · Color, brightness → every selected effect, when changed.
+//  · Timing        → never (the fields are disabled).
+function _saveMultiEffectEdit() {
+  const primary = S.effects.find(e => e.id === S._editPrimary);
+  if (!primary) return;
+  const ids = new Set(S._editIds);
+  const init = S._editInit || {};
+  const _u = _cloneEffects();
+  const newType = document.getElementById('eff-type-sel').value;
+  const typeChanged = newType !== primary.type;
+  const color = document.getElementById('eff-color-input').value;
+  const bri = parseInt(document.getElementById('eff-brightness').value, 10);
+  const colorChanged = color.toLowerCase() !== init.color;
+  const briChanged = bri !== init.bri;
+  const typeSettings = typeChanged ? collectEffectProps(effectSettings(newType)) : null;
+  const changedProps = typeChanged ? [] :
+    [..._readPropControls()].filter(([k, v]) => !init.props || init.props.get(k) !== v);
+  const primaryType = primary.type;
+  S.effects.forEach(e => {
+    if (!ids.has(e.id)) return;
+    if (typeChanged) {
+      e.type = newType;
+      e.xlSettings = typeSettings;
+    } else if (changedProps.length && e.type === primaryType) {
+      const m = parseSettingsStr(e.xlSettings || effectSettings(e.type));
+      changedProps.forEach(([k, v]) => m.set(k, v));
+      e.xlSettings = serializeSettings(m);
+    }
+    if (colorChanged) e.color = color;
+    if (briChanged) e.brightness = bri;
+  });
+  commitUndo(_u);
+  if (colorChanged) pushRecentColor(color);
+  document.getElementById('effect-modal').classList.add('hidden');
+  drawTimeline();
+  flashStatus(`Updated ${ids.size} effects`);
 }
 
 // ── Undo / redo (effect edits) ───────────────────────────────────────────────
