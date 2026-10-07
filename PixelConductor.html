@@ -5436,16 +5436,26 @@ async function loadShowLayout() {
     // Drop group-header names and stale submodel props (submodels are rebuilt
     // fresh below; their names were captured in _oldIdxToName above so effects
     // still remap correctly).
-    S.props = S.props.filter(p => !groupNames.has(p.name) && !p.isSub && !p.isGroup);
+    // Submodel full names ("Snow Flake 1/Hub"): a plain prop with one of these names
+    // is a ghost (it could reach S.props from an older save); drop it so its effects
+    // remap by name onto the real submodel built below.
+    const subModelNames = new Set();
+    (layout.models || []).forEach(m => (m.subModels || []).forEach(sm => subModelNames.add(m.name + '/' + sm.name)));
+    S.props = S.props.filter(p => !groupNames.has(p.name) && !p.isSub && !p.isGroup && !subModelNames.has(p.name));
 
     // Add any group members that are missing from S.props
     // (e.g. props that exist in the show layout but have no effects in the loaded XSQ)
     const existingNames = new Set(S.props.map(p => p.name));
     S.groups.forEach(grp => {
       grp.members.forEach(mname => {
-        if (existingNames.has(mname)) return;
-        S.props.push({ name: mname, color: '#ffffff', ch: modelChannelCount(layout.models.find(m => m.name === mname)) });
-        existingNames.add(mname);
+        // A submodel member ("Snow Flake 1/Hub") needs its parent model as a prop;
+        // buildSubModelProps then creates the submodel itself. A member that is
+        // another group gets its own group pseudo-prop. Neither becomes a plain prop.
+        let name = mname;
+        if (subModelNames.has(mname)) name = mname.slice(0, mname.lastIndexOf('/'));
+        if (groupNames.has(name) || existingNames.has(name)) return;
+        S.props.push({ name, color: '#ffffff', ch: modelChannelCount(layout.models.find(m => m.name === name)) });
+        existingNames.add(name);
       });
     });
 
