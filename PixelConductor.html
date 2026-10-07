@@ -758,6 +758,12 @@ input[type=range]{accent-color:var(--accent)}
       <div class="recent-row" id="eff-recent-colors" style="margin-top:6px"></div>
     </div>
     <div class="modal-field">
+      <label>Brightness <span id="eff-bri-val" style="font-weight:400;color:var(--text-dim)">100%</span></label>
+      <input type="range" id="eff-brightness" min="0" max="400" step="5" value="100"
+             oninput="document.getElementById('eff-bri-val').textContent = this.value + '%'"
+             title="xLights palette brightness. 100% shows the colour as picked; above 100% multiplies it and clips toward white.">
+    </div>
+    <div class="modal-field">
       <label>Start Time (s)</label>
       <input type="number" id="eff-start" step="0.01">
     </div>
@@ -3162,7 +3168,7 @@ function onTLMouseUp(e) {
         const pi = S.props.findIndex(p => p.name === mname);
         if (pi >= 0)
           S.effects.push({ id: S.nextId++, propIdx: pi,
-            startTime: t1, endTime: t2, type: S.activeEffect, color: S.activeColor, xlSettings: null });
+            startTime: t1, endTime: t2, type: S.activeEffect, color: S.activeColor, brightness: 100, xlSettings: null });
       });
     }
   }
@@ -3242,7 +3248,7 @@ function onTLDblClick(e) {
 //  EFFECTS CRUD
 // ═══════════════════════════════════════════════════════════════
 function createEffect(propIdx, startTime, endTime) {
-  S.effects.push({ id: S.nextId++, propIdx, startTime, endTime, type: S.activeEffect, color: S.activeColor, xlSettings: null });
+  S.effects.push({ id: S.nextId++, propIdx, startTime, endTime, type: S.activeEffect, color: S.activeColor, brightness: 100, xlSettings: null });
 }
 
 function deleteSelectedEffect() {
@@ -3365,6 +3371,8 @@ function openEffectModal(eff) {
   document.getElementById('eff-color-input').value = eff.color;
   document.getElementById('eff-start').value       = eff.startTime.toFixed(3);
   document.getElementById('eff-end').value         = eff.endTime.toFixed(3);
+  document.getElementById('eff-brightness').value  = effBrightness(eff);
+  document.getElementById('eff-bri-val').textContent = effBrightness(eff) + '%';
   renderRecentColors();   // refresh the modal swatch row
   renderEffectProps(eff.type, eff.xlSettings || effectSettings(eff.type));
   document.getElementById('effect-modal').classList.remove('hidden');
@@ -3390,6 +3398,7 @@ function saveEffectEdit() {
   eff.type      = newType;
   eff.xlSettings = collectEffectProps(base);   // edited params → verbatim export
   eff.color     = document.getElementById('eff-color-input').value;
+  eff.brightness = parseInt(document.getElementById('eff-brightness').value, 10);
   eff.startTime = parseFloat(document.getElementById('eff-start').value);
   eff.endTime   = parseFloat(document.getElementById('eff-end').value);
   commitUndo(_u);
@@ -3403,7 +3412,7 @@ const UNDO_MAX = 100;
 function _cloneEffects() { return S.effects.map(e => ({ ...e })); }
 function _effectsSig(list) {
   return list.length + '|' + list.map(e =>
-    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + e.color + ',' + (e.xlSettings || '')
+    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + e.color + ',' + (e.brightness ?? 100) + ',' + (e.xlSettings || '')
   ).join(';');
 }
 // Push a pre-mutation snapshot onto the undo stack — but only if the effects
@@ -3500,7 +3509,7 @@ function copySelectedEffects() {
     const p = S.props[e.propIdx];
     const mrow = _modelRowOf(e);
     return {
-      type: e.type, color: e.color, xlSettings: e.xlSettings ?? null,
+      type: e.type, color: e.color, brightness: e.brightness ?? 100, xlSettings: e.xlSettings ?? null,
       dt:  e.startTime - minStart,          // time offset from the earliest copied effect
       dur: e.endTime - e.startTime,
       rowOffset: mrow >= 0 ? propRowDistance(minRow, mrow) : 0,  // in prop rows
@@ -3526,7 +3535,7 @@ function copyModel(propIdx) {
   if (!items.length) { flashStatus(`"${model.name}" has no effects to copy`); return; }
   const minStart = Math.min(...items.map(g => g.e.startTime));
   S.clipboard = items.map(g => ({
-    type: g.e.type, color: g.e.color, xlSettings: g.e.xlSettings ?? null,
+    type: g.e.type, color: g.e.color, brightness: g.e.brightness ?? 100, xlSettings: g.e.xlSettings ?? null,
     dt: g.e.startTime - minStart, dur: g.e.endTime - g.e.startTime,
     rowOffset: 0, subName: g.sub,
   }));
@@ -3578,7 +3587,7 @@ function pasteEffects(explicitRow, explicitTime) {
     if (pi < 0) return;
     const start = Math.max(0, base + c.dt);     // preserve the set's internal spacing
     const id = S.nextId++;
-    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, xlSettings: c.xlSettings ?? null });
+    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
     newIds.push(id);
   });
   if (!newIds.length) return;
@@ -3653,16 +3662,19 @@ function buildXSQXml() {
   xml += `    <imageDir></imageDir>\n`;
   xml += `  </head>\n`;
   // ── Build deduped color palette table ─────────────────────────────────────
-  // xLights ColorPalettes: one <ColorPalette> entry per unique colour;
-  // each <Effect> references its colour by 0-based index.
-  const paletteMap = new Map();   // hex → index
+  // xLights ColorPalettes: one <ColorPalette> entry per unique colour AND
+  // brightness (brightness lives in the palette); each <Effect> references its
+  // palette by 0-based index.
+  const paletteKey = eff => (eff.color || '#ffffff').toUpperCase() + '|' + effBrightness(eff);
+  const paletteMap = new Map();   // "HEX|brightness" → index
   S.effects.forEach(eff => {
-    const hex = (eff.color || '#ffffff').toUpperCase();
-    if (!paletteMap.has(hex)) paletteMap.set(hex, paletteMap.size);
+    const key = paletteKey(eff);
+    if (!paletteMap.has(key)) paletteMap.set(key, paletteMap.size);
   });
 
   xml += `  <ColorPalettes>\n`;
-  paletteMap.forEach((idx, hex) => {
+  paletteMap.forEach((idx, key) => {
+    const [hex, bri] = key.split('|');
     // C_BUTTON_Palette1 is the foreground colour; Palette1 enabled, rest black/off
     xml += `    <ColorPalette>C_BUTTON_Palette1=${hex},C_BUTTON_Palette2=#000000,` +
            `C_BUTTON_Palette3=#000000,C_BUTTON_Palette4=#000000,` +
@@ -3672,7 +3684,7 @@ function buildXSQXml() {
            `C_CHECKBOX_Palette1=1,C_CHECKBOX_Palette2=0,C_CHECKBOX_Palette3=0,` +
            `C_CHECKBOX_Palette4=0,C_CHECKBOX_Palette5=0,C_CHECKBOX_Palette6=0,` +
            `C_CHECKBOX_Palette7=0,C_CHECKBOX_Palette8=0,` +
-           `C_SLIDER_Brightness=400,C_SLIDER_SparkleFrequency=0</ColorPalette>\n`;
+           `C_SLIDER_Brightness=${bri},C_SLIDER_SparkleFrequency=0</ColorPalette>\n`;
   });
   xml += `  </ColorPalettes>\n`;
 
@@ -3726,8 +3738,7 @@ function buildXSQXml() {
   function emitEffect(eff, idx, indent) {
     const st  = Math.round(eff.startTime * 1000);
     const et  = Math.round(eff.endTime   * 1000);
-    const hex = (eff.color || '#ffffff').toUpperCase();
-    const pal = paletteMap.get(hex) ?? 0;
+    const pal = paletteMap.get(paletteKey(eff)) ?? 0;
     const idAttr = idx === 0 ? '' : ` id="${idx}"`;
     const refIdx = effRef.get(eff.id) ?? 0;
     const xlName = XLIGHTS_EFFECT_NAME[eff.type] || eff.type;
@@ -4310,7 +4321,7 @@ Rules:
     const newEffects = JSON.parse(jsonMatch[0]);
 
     if (confirm(`Claude suggested ${newEffects.length} effects. Replace current sequence?`)) {
-      S.effects = newEffects.map(e => ({ ...e, id: S.nextId++, xlSettings: null }));
+      S.effects = newEffects.map(e => ({ ...e, id: S.nextId++, brightness: 100, xlSettings: null }));
       drawTimeline();
     }
   } catch (err) {
@@ -4949,6 +4960,19 @@ function parsePaletteColor(str) {
   return m ? '#' + m[1] : '#7c5ce4';
 }
 
+// An effect's brightness in percent; effects saved before brightness existed have none.
+function effBrightness(eff) {
+  const b = eff && eff.brightness;
+  return Number.isFinite(b) ? Math.max(0, Math.min(400, Math.round(b))) : 100;
+}
+
+// xLights keeps an effect's brightness (0-400%) in its color palette, not in the
+// effect settings, and omits the key when it is the default 100.
+function parsePaletteBrightness(str) {
+  const m = str.match(/C_SLIDER_Brightness=(\d+)/);
+  return m ? Math.max(0, Math.min(400, parseInt(m[1]))) : 100;
+}
+
 // True when an On effect's settings carry a Pulse envelope: either a brightness
 // ramp (Eff_On_Start != Eff_On_End) or symmetric fade transitions (T_ fades > 0).
 // Kept in sync with effectSettings('Pulse').
@@ -5072,8 +5096,9 @@ async function applyXSQContent(xmlText, xsqName) {
     const doc = new DOMParser().parseFromString(xmlText, 'application/xml');
 
     // Palettes array
-    const palettes = [...doc.querySelectorAll('ColorPalettes > ColorPalette')]
-      .map(p => parsePaletteColor(p.textContent));
+    const paletteEls = [...doc.querySelectorAll('ColorPalettes > ColorPalette')];
+    const palettes   = paletteEls.map(p => parsePaletteColor(p.textContent));
+    const paletteBri = paletteEls.map(p => parsePaletteBrightness(p.textContent));
 
     // EffectDB: positional array of raw settings strings; each timeline effect's
     // ref="N" indexes into this. Carries the params that distinguish e.g.
@@ -5108,6 +5133,7 @@ async function applyXSQContent(xmlText, xsqName) {
         start: parseInt(eff.getAttribute('startTime') || '0') / 1000,
         end:   parseInt(eff.getAttribute('endTime')   || '0') / 1000,
         color: palettes[palIdx] || '#7c5ce4',
+        brightness: paletteBri[palIdx] ?? 100,
         type:  mapEffectName(name, settings),   // settings-aware: recovers Rainbow/Pulse
         xlSettings: settings || null,           // preserved verbatim for re-export
       };
@@ -5120,7 +5146,7 @@ async function applyXSQContent(xmlText, xsqName) {
         modelEl.querySelectorAll(':scope > EffectLayer > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, xlSettings: e.xlSettings });
+            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       }
       // Submodel (drop) effects — parent prop's sub props don't exist yet
@@ -5129,7 +5155,7 @@ async function applyXSQContent(xmlText, xsqName) {
         sml.querySelectorAll(':scope > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, xlSettings: e.xlSettings });
+            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       });
     });
@@ -5316,7 +5342,7 @@ async function loadShowLayout() {
       S._pendingSubEffects.forEach(pe => {
         const idx = nameToIdx.get(pe.parentName + '/' + pe.subName);
         if (idx !== undefined)
-          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, xlSettings: pe.xlSettings });
+          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, brightness: pe.brightness, xlSettings: pe.xlSettings });
       });
       S._pendingSubEffects = [];
     }
@@ -5759,6 +5785,16 @@ function _fxMarquee(col, idx, n, el) {
 
 // Master dispatcher — returns [r,g,b] for one pixel
 function stagePixelColor(eff, idx, n, el, dur, nx, ny) {
+  const rgb = _effectBaseColor(eff, idx, n, el, dur, nx, ny);
+  // Same as xLights' renderer (PixelBuffer, contrast 0): scale each channel by
+  // brightness/100 and cap at 255, so >100% clips mixed colours toward white.
+  const b = effBrightness(eff);
+  if (b === 100) return rgb;
+  const k = b / 100;
+  return [Math.min(255, Math.floor(rgb[0] * k)), Math.min(255, Math.floor(rgb[1] * k)), Math.min(255, Math.floor(rgb[2] * k))];
+}
+
+function _effectBaseColor(eff, idx, n, el, dur, nx, ny) {
   switch (eff.type) {
     case 'On':         return _fxOn(eff.color);
     case 'Chase':      return _fxChase(eff.color, idx, n, el, dur);
