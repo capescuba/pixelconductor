@@ -4266,11 +4266,17 @@ Rules:
         'Content-Type': 'application/json',
         'x-api-key': S.keys.anthropic,
         'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'server-side-fallback-2026-07-01',
         'anthropic-dangerous-direct-browser-access': 'true'
       },
       body: JSON.stringify({
-        model: 'claude-sonnet-4-5',
-        max_tokens: 16000,
+        model: 'claude-opus-5-5',
+        // Thinking is always on for this model and counts toward max_tokens,
+        // so leave room for it on top of a whole-song effect list.
+        max_tokens: 32000,
+        output_config: { effort: 'medium' },
+        // If a safety classifier declines, re-run on Anthropic's recommended model.
+        fallbacks: 'default',
         messages: [{ role: 'user', content: prompt }]
       })
     });
@@ -4280,7 +4286,20 @@ Rules:
       throw new Error(`API error ${res.status}: ${errBody}`);
     }
     const data = await res.json();
-    const text = data.content?.[0]?.text?.trim() || '';
+    if (data.stop_reason === 'refusal') {
+      const why = data.stop_details?.explanation || data.stop_details?.category || 'no reason given';
+      throw new Error(`Claude declined this request (${why}).`);
+    }
+    if (data.stop_reason === 'max_tokens') {
+      throw new Error('Claude ran out of room before finishing the arrangement. Try a shorter song section or fewer props.');
+    }
+    // The reply starts with thinking blocks, so collect the text blocks by type
+    // rather than assuming content[0] is the answer.
+    const text = (data.content || [])
+      .filter(b => b.type === 'text')
+      .map(b => b.text)
+      .join('')
+      .trim();
 
     // Parse JSON from response
     const jsonMatch = text.match(/\[[\s\S]*\]/);
