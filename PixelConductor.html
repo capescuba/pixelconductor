@@ -1074,7 +1074,7 @@ function computeSingleLineModel(m) {
     const f = (n === 1) ? 0.5 : i / (n - 1);   // endpoints inclusive, like the arch
     worldPixels.push({ wx: ax + (bx - ax) * f, wy: ay + (by - ay) * f });
   }
-  return { pixelType: 'worldspace', worldPixels,
+  return { pixelType: 'worldspace', bufferKind: 'line', worldPixels,
            centerWx: (ax + bx) / 2, centerWy: (ay + by) / 2 };
 }
 
@@ -1357,6 +1357,7 @@ const EFFECT_PARAM_SCHEMA = {
   'Snowflakes': [
     { key:'E_SLIDER_Snowflakes_Count', label:'Count', type:'slider', min:1, max:100, step:1, def:30 },
     { key:'E_SLIDER_Snowflakes_Speed', label:'Speed', type:'slider', min:0, max:50, step:1, def:10 },
+    { key:'E_SLIDER_Snowflakes_Type', label:'Flake Type', type:'slider', min:0, max:9, step:1, def:1 },
     { key:'E_CHOICE_Falling', label:'Falling', type:'choice',
       options:['Driving','Falling','Falling & Accumulating'], def:'Falling' },
   ],
@@ -1369,7 +1370,7 @@ const EFFECT_PARAM_SCHEMA = {
   'Strobe': [
     { key:'E_SLIDER_Number_Strobes', label:'Number of Strobes', type:'slider', min:1, max:500, step:1, def:3 },
     { key:'E_SLIDER_Strobe_Duration', label:'Strobe Duration', type:'slider', min:1, max:200, step:1, def:10 },
-    { key:'E_SLIDER_Strobe_Type', label:'Strobe Type', type:'slider', min:1, max:3, step:1, def:1 },
+    { key:'E_SLIDER_Strobe_Type', label:'Strobe Type', type:'slider', min:1, max:4, step:1, def:1 },
     { key:'E_CHECKBOX_Strobe_Music', label:'Timing/Music', type:'check', def:0 },
   ],
 
@@ -3681,7 +3682,7 @@ function buildXSQXml() {
   xml += `  <head>\n`;
   xml += `    <version>2026.07</version>\n`;
   xml += `    <author>PixelConductor</author>\n`;
-  xml += `    <sequenceTiming>50 ms</sequenceTiming>\n`;
+  xml += `    <sequenceTiming>${S.frameMs || 50} ms</sequenceTiming>\n`;
   xml += `    <sequenceType>Media</sequenceType>\n`;
   xml += `    <mediaFile>${escXML(mediaFile)}</mediaFile>\n`;
   xml += `    <sequenceDuration>${(S.duration || 60).toFixed(3)}</sequenceDuration>\n`;
@@ -4773,7 +4774,8 @@ function _buildSampleModels(W, H) {
     const n = 18, cx = cw * 0.5, cy = bot, r = Math.min(cw * 0.4, (bot - top) * 0.95), px = [];
     for (let i = 0; i < n; i++) {
       const th = Math.PI * (1 - i / (n - 1));   // PI (left) → 0 (right)
-      px.push({ x: cx + r * Math.cos(th), y: cy - r * Math.sin(th), idx: i, n, nx: i / (n - 1), ny: 1 - Math.sin(th) });
+      px.push({ x: cx + r * Math.cos(th), y: cy - r * Math.sin(th), idx: i, n, nx: i / (n - 1), ny: 1 - Math.sin(th),
+                buf: { x: i, y: 0, w: n, h: 1 } });
     }
     models.push({ label: 'Arch', px });
   }
@@ -4781,14 +4783,16 @@ function _buildSampleModels(W, H) {
   {
     const gc = 8, gr = 8, n = gc * gr, ox = cw + 8, oy = top, gw = cw - 16, gh = bot - top, px = [];
     for (let r0 = 0; r0 < gr; r0++) for (let c = 0; c < gc; c++)
-      px.push({ x: ox + gw * (c + 0.5) / gc, y: oy + gh * (r0 + 0.5) / gr, idx: r0 * gc + c, n, nx: c / (gc - 1), ny: r0 / (gr - 1) });
+      px.push({ x: ox + gw * (c + 0.5) / gc, y: oy + gh * (r0 + 0.5) / gr, idx: r0 * gc + c, n, nx: c / (gc - 1), ny: r0 / (gr - 1),
+                buf: { x: c, y: gr - 1 - r0, w: gc, h: gr } });
     models.push({ label: 'Snow', px });
   }
   // 3. Icicles — 2 drops × 9 nodes
   {
     const dc = 2, dr = 9, n = dc * dr, ox = cw * 2, oy = top, dw = cw, dh = bot - top, px = [];
     for (let c = 0; c < dc; c++) for (let r0 = 0; r0 < dr; r0++)
-      px.push({ x: ox + dw * (0.36 + c * 0.30), y: oy + dh * (r0 + 0.5) / dr, idx: c * dr + r0, n, nx: c, ny: r0 / (dr - 1) });
+      px.push({ x: ox + dw * (0.36 + c * 0.30), y: oy + dh * (r0 + 0.5) / dr, idx: c * dr + r0, n, nx: c, ny: r0 / (dr - 1),
+                buf: { x: c, y: dr - 1 - r0, w: dc, h: dr } });
     models.push({ label: 'Icicle', px });
   }
   _sampleModelsCache = { W, H, models };
@@ -4811,7 +4815,7 @@ function drawEffectPreview() {
   const R = 2.3;
   _buildSampleModels(W, H).forEach(m => {
     m.px.forEach(p => {
-      const rgb = stagePixelColor(eff, p.idx, p.n, el, dur, p.nx, p.ny);
+      const rgb = stagePixelColor(eff, p.idx, p.n, el, dur, p.nx, p.ny, p.buf);
       if (rgb[0] + rgb[1] + rgb[2] < 12) { ctx.fillStyle = '#1c1c1c'; }   // "off" pixel, faintly visible
       else ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
       ctx.beginPath(); ctx.arc(p.x, p.y, R, 0, 7); ctx.fill();
@@ -5213,6 +5217,9 @@ async function applyXSQContent(xmlText, xsqName) {
 
     // Metadata — duration and media file
     const mediaFile = doc.querySelector('mediaFile')?.textContent?.trim() || '';
+    // Frame timing ("50 ms"): xLights renders and the controller plays at this rate.
+    const fms = parseInt(doc.querySelector('sequenceTiming')?.textContent || '', 10);
+    S.frameMs = fms > 0 ? fms : 50;
     const durText   = doc.querySelector('sequenceDuration')?.textContent?.trim();
     if (durText) {
       S.duration = parseFloat(durText);
@@ -5679,209 +5686,1027 @@ function _hsv3(h,s,v) {
 }
 function _sc([r,g,b],k){return[~~(r*k),~~(g*k),~~(b*k)];}
 
-// On — E_SLIDER_Eff_On_Brightness=100  (all pixels solid)
-function _fxOn(col){ return _rgb3(col); }
+// Chase — a port of xLights' SingleStrandEffect::RenderSingleStrandChase and
+// draw_chase (src-core/effects/SingleStrandEffect.cpp), driven by the effect's own
+// settings: chase type (15 modes), number of chases, chase size (Color_Mix1, % of
+// the buffer width), rotations, offset, fade type and Group All. It renders a
+// whole frame of the effect's W×H buffer; `buf` places this pixel in that buffer.
+const CHASE_TYPES = ['Left-Right', 'Right-Left', 'Bounce from Left', 'Bounce from Right',
+  'Dual Chase', 'From Middle', 'To Middle', 'Bounce to Middle', 'Bounce from Middle',
+  'Static Left-Right', 'Static Right-Left', 'Static Dual', 'Static From Middle',
+  'Static To Middle', 'Static Double-Ended'];
+const CHASE_FADES = { 'From Head': 1, 'From Tail': 2, 'Head and Tail': 3, 'Middle': 4 };
+const _chaseParamCache = new Map();
+const _chaseFrameCache = new Map();
 
-// Chase — E_SLIDER_Chase_Rotations=1, E_CHOICE_Chase_Type=Left, E_SLIDER_Chase_Width=10
-// Lit window (10% wide) sweeps pixel 0 → pixel N-1, one pass per duration
-function _fxChase(col, idx, n, el, dur) {
-  const phase = (el / dur) % 1.0;                  // 0→1 over one rotation
-  const pn    = n > 1 ? idx / (n - 1) : 0.5;       // normalised pixel position
-  let dist    = Math.abs(pn - phase);
-  if (dist > 0.5) dist = 1 - dist;                  // circular wrap
-  return dist < 0.05 ? _sc(_rgb3(col), Math.min(1, 1.15 - dist / 0.05 * 0.15)) : [0,0,0];
+function _chaseParams(settingsStr) {
+  const key = settingsStr || '';
+  let p = _chaseParamCache.get(key);
+  if (p) return p;
+  const m = parseSettingsStr(settingsStr || effectSettings('Chase'));
+  const num = (k, d) => { const v = parseFloat(m.get(k)); return Number.isFinite(v) ? v : d; };
+  p = {
+    type:     Math.max(0, CHASE_TYPES.indexOf(m.get('E_CHOICE_Chase_Type1'))),
+    fade:     CHASE_FADES[m.get('E_CHOICE_Fade_Type')] || 0,
+    chases:   Math.max(1, Math.round(num('E_SLIDER_Number_Chases', 1))),
+    size:     num('E_SLIDER_Color_Mix1', 10),
+    speed:    num('E_TEXTCTRL_Chase_Rotations', 1) || 1,
+    offset:   num('E_TEXTCTRL_Chase_Offset', 0),
+    groupAll: m.get('E_CHECKBOX_Chase_Group_All') === '1',
+    rainbow:  m.get('E_CHOICE_SingleStrand_Colors') === 'Rainbow',
+  };
+  if (_chaseParamCache.size > 200) _chaseParamCache.clear();
+  _chaseParamCache.set(key, p);
+  return p;
 }
 
-// Color Wash — E_SLIDER_ColorWash_Count=1, HFade=0, VFade=0
-// Brightness wave sweeps left (nx=0) to right (nx=1), once per duration
-function _fxColorWash(col, el, dur, nx) {
-  const front = el / dur;               // wave front position 0→1
-  const rel   = front - nx;             // how far past this pixel
-  let k = 0.12;
-  if (rel >= 0 && rel < 0.15) k = 0.12 + 0.88 * (rel / 0.15);         // rise
-  else if (rel >= 0.15 && rel < 0.65) k = 1.0;                          // peak
-  else if (rel >= 0.65 && rel < 1.0)  k = 1.0 - 0.88 * ((rel-0.65)/0.35); // fall
-  return _sc(_rgb3(col), k);
+function _rgbToHsv([r, g, b]) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [((h * 60) + 360) % 360 / 360, max ? d / max : 0, max];   // h, s, v all 0..1
 }
 
-// Twinkle — E_SLIDER_Twinkle_Count=100, E_SLIDER_Twinkle_Steps=30
-// Every pixel independently twinkles on/off using a deterministic phase
-function _fxTwinkle(col, idx, el) {
-  const off   = ((Math.sin(idx * 127.1 + 311.7) * 43758.5) % 1 + 1) % 1;
-  const phase = ((el * 3 + off) % 1 + 1) % 1;           // 3 cycles/sec ≈ steps=30
-  return _sc(_rgb3(col), Math.pow(Math.sin(phase * Math.PI), 2));
+// One frame: per-cell colours (null = off), indexed by buffer column, or by
+// y*W + x when Group All runs the chase node by node through a 2-D buffer.
+function _chaseFrame(p, W, H, pos, baseRGB) {
+  const groupAll = p.groupAll && H > 1;
+  const total = groupAll ? W * H : W;
+  const t = p.type;
+  const forwardDir  = [0, 2, 6, 9, 13, 14].includes(t);   // xLights "ChaseDirection"
+  const Static      = t >= 9 && t <= 14;
+  const DoubleEnd   = t === 14;
+  const Mirror      = [5, 6, 12, 13].includes(t);
+  const AutoReverse = [2, 3, 7, 8].includes(t);
+  const Dual        = [4, 7, 8, 11, 14].includes(t);
+
+  let width = total;
+  if (Mirror) width = width % 2 === 0 ? width / 2 : (width + 1) / 2;
+  if (width === 0) width = 1;
+  const N = Math.max(1, p.chases);
+  let scaled = Math.trunc(width * p.size / 100);
+  if (scaled < 1) scaled = 1;
+
+  // How far through the current chase cycle we are (0..1, x2 when bouncing)
+  let rt = Static ? 0 : pos;
+  if (t === 8) { rt += 0.25 / p.speed; if (rt > 1) rt -= 1; }   // Bounce from Middle starts centred
+  rt *= p.speed;
+  rt += p.offset / 100;
+  while (rt > 1) rt -= 1;
+  while (rt < 0) rt += 1;
+  if (AutoReverse) rt *= 2;
+
+  let dx = width / N;
+  if (dx < 1) dx = 1;
+  let start;
+  if (N > 1)          start = Math.trunc(width * rt + 1);
+  else if (DoubleEnd) start = Math.trunc((width + scaled * 2 - 1) * rt + 1);
+  else { start = Math.trunc((width + scaled - 1) * rt + 1); if (rt >= 0.999999) start -= 1; }
+
+  const cells = new Array(total).fill(null);
+  const [h0, s0, v0] = p.rainbow ? [0, 1, 1] : _rgbToHsv(baseRGB);
+  const mcw = Math.max(1, Math.trunc(width * p.size / 100));
+  const middle = !p.fade ? 0 : (mcw % 2 === 0 ? Math.trunc(mcw / 2) - 1 : Math.trunc(mcw / 2));
+  let ppc = Math.trunc(width / N);
+  if (ppc < 1) ppc = 1;
+  const nPix = Math.min(mcw, ppc);
+
+  const draw = (x, forward) => {
+    let firstX = x, dir = 1;
+    if (AutoReverse) {
+      if (firstX < 0 && firstX > -mcw) { firstX = -firstX - 1; dir = -1; }
+      if (firstX < 0 || firstX >= width) {
+        let dif;
+        if (firstX < 0) { firstX = -firstX - 1; dir = -1; dif = 0; }
+        else { dif = firstX - width + 1; firstX = width; dir = -1; }
+        while (dif > 0) {
+          dif--; firstX += dir;
+          if (firstX === width - 1) dir = -1;
+          if (firstX === 0) dir = 1;
+        }
+      }
+    }
+    for (let i = 0; i < nPix; i++) {
+      const h = p.rainbow ? 1 - i / mcw : h0;
+      let v = v0;
+      let nx;
+      if (AutoReverse) {
+        nx = firstX + dir;
+        if (nx < 0) { dir = 1; nx = 0; }
+        if (nx >= width) { dir = -1; nx = width - 1; }
+        firstX = nx;
+      } else if (N > 1) {
+        nx = x + i;
+        while (nx < 0) nx += width;
+        while (nx >= width) nx -= width;
+      } else {
+        nx = x + i;
+      }
+      if (!forward) nx = width - nx - 1;
+      switch (p.fade) {
+        case 1: v = Math.max(0, v0 - (mcw - (i + 1)) / mcw); break;                       // From Head
+        case 2: v = Math.max(0, (mcw - (i + 1)) / mcw); break;                            // From Tail
+        case 3: v = i <= middle ? v0 * (1 - (2 * i) / mcw) : v0 * ((2 * (i - middle)) / mcw);
+                v = Math.min(v0, Math.max(0, v)); break;                                  // Head and Tail
+        case 4: v = i > middle ? (mcw - (i + 1)) / (0.5 * mcw) : v0 - (mcw - (2 * i + 1)) / mcw;
+                v = Math.max(0, v); break;                                                // Middle
+      }
+      if (nx < 0 || nx > width) continue;
+      let c = _hsv3(h * 360, p.rainbow ? 1 : s0, v);
+      if (p.fade >= 2 && nx < total) {   // these fades keep the brighter of overlapping heads/tails
+        const prev = cells[nx];
+        if (prev && (prev[0] || prev[1] || prev[2]))
+          c = [Math.max(c[0], prev[0]), Math.max(c[1], prev[1]), Math.max(c[2], prev[2])];
+      }
+      if (nx < total) cells[nx] = c;
+      if (Mirror && total - nx - 1 >= 0 && total - nx - 1 < total) cells[total - nx - 1] = c;
+    }
+  };
+
+  for (let k = 0; k < N; k++) {
+    const x = AutoReverse ? Math.trunc(k * dx + width * rt - scaled / 2)
+                          : Math.trunc(k * dx + start - scaled);
+    draw(DoubleEnd ? width - x - scaled : x, forwardDir !== DoubleEnd);
+    if (Dual) draw(DoubleEnd ? x - scaled : x, forwardDir === DoubleEnd);
+  }
+  return cells;
 }
 
-// Pulse — exported as On + fade transitions (T_TEXTCTRL_Fadein/Fadeout) and an
-// On brightness ramp; see effectSettings('Pulse'). Entire prop fades in and out
-// once (cosine envelope).
-function _fxPulse(col, el, dur) {
-  return _sc(_rgb3(col), 0.5 - 0.5 * Math.cos((el / dur) * 2 * Math.PI));
+function _fxChase(eff, idx, n, el, dur, buf) {
+  const p = _chaseParams(eff.xlSettings);
+  const b = buf || { x: idx, y: 0, w: n, h: 1 };
+  const pos = Math.min(1, Math.max(0, el / dur));
+  const key = `${eff.xlSettings || ''}|${eff.color}|${b.w}x${b.h}|${pos.toFixed(4)}`;
+  let cells = _chaseFrameCache.get(key);
+  if (!cells) {
+    if (_chaseFrameCache.size > 256) _chaseFrameCache.clear();
+    cells = _chaseFrame(p, b.w, b.h, pos, _rgb3(eff.color));
+    _chaseFrameCache.set(key, cells);
+  }
+  const cell = (p.groupAll && b.h > 1) ? cells[b.y * b.w + b.x] : cells[b.x];
+  return cell || [0, 0, 0];
 }
 
-// Fire — E_SLIDER_Fire_Height=50, E_SLIDER_Fire_HueShift=0
-// ny: 0=top of model, 1=base (fire source at bottom)
-function _fxFire(idx, el, ny) {
-  const raw = Math.max(0, (ny - 0.5) * 2);           // full at base (ny=1), 0 at midpoint
-  if (raw <= 0) return [0,0,0];
-  const fl = 0.6 + 0.4 * Math.sin(el*7.3+idx*1.9) * Math.sin(el*4.1+idx*2.7);
-  const i  = Math.min(1, raw * (0.65 + 0.35*fl) * 1.5);
-  if (i<0.25){ const t=i/0.25;            return [~~(t*200),0,0]; }
-  if (i<0.5) { const t=(i-0.25)/0.25;     return [~~(200+t*55),~~(t*120),0]; }
-  if (i<0.8) { const t=(i-0.5)/0.3;       return [255,~~(120+t*135),0]; }
-  const t=(i-0.8)/0.2; return [255,255,~~(t*220)];
+// xLights-style "minimal grid" buffer for a set of positions: snap them to a
+// 400-step grid (the layout GridSize) and keep only the columns and rows that hold
+// a light. Larger y = higher up. Returns {x, y, w, h} per point, y from the bottom.
+function _minimalGrid(xs, ys) {
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const span = Math.max(x1 - x0, y1 - y0) || 1;
+  const qx = xs.map(x => Math.round((x - x0) / span * 399));
+  const qy = ys.map(y => Math.round((y - y0) / span * 399));
+  const cols = [...new Set(qx)].sort((a, b) => a - b);
+  const rows = [...new Set(qy)].sort((a, b) => a - b);
+  const ci = new Map(cols.map((v, i) => [v, i])), ri = new Map(rows.map((v, i) => [v, i]));
+  return qx.map((q, k) => ({ x: ci.get(q), y: ri.get(qy[k]), w: cols.length, h: rows.length }));
 }
 
-// Rainbow — E_SLIDER_Rainbow_Speed=5, E_SLIDER_Rainbow_Repeat=1
-// Hue distributes evenly across pixels and rotates over time
+// ═══════════════════════════════════════════════════════════════
+//  xLIGHTS EFFECT RENDERER (stage preview)
+// ═══════════════════════════════════════════════════════════════
+// Each effect is ported from xLights' own renderer (src-core/effects/*Effect.cpp and
+// their ISPC kernels) and draws whole frames of its W×H render buffer — x to the
+// right, y UP from the bottom row, like xLights — from the effect's own settings.
+// A stage dot then reads its cell. Time runs in whole frames of the sequence's
+// frame timing. Stateful effects (Strobe, Twinkle, Fire, Snowflakes, Meteors,
+// Fireworks) are simulated frame by frame from the effect's start, as xLights
+// renders them, and cached so playback only steps forward. Random draws use a
+// seeded generator, so a preview is stable but not pixel-identical to xLights.
+
+const _xlCache = new Map();          // effect+buffer key → { frame, cells, state }
+const _xlSettingsCache = new Map();  // settings string → accessor
+
+function _xlSeed(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h;
+}
+function _xlRng(seed) {   // mulberry32
+  let a = seed >>> 0;
+  const f = () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  return { f, int: (lo, hi) => hi < lo ? lo : lo + Math.floor(f() * (hi - lo + 1)) };
+}
+const _xlHsv = (h, s, v) => _hsv3(h * 360, s, Math.max(0, Math.min(1, v)));   // h, s, v in 0..1
+
+// Settings read the way xLights' GetValueCurveInt/Double does: the SLIDER_ key
+// first, then TEXTCTRL_, as written (no divisor).
+function _xlSettings(str) {
+  let a = _xlSettingsCache.get(str);
+  if (a) return a;
+  const m = parseSettingsStr(str);
+  const raw = name => m.has('E_SLIDER_' + name) ? m.get('E_SLIDER_' + name) : m.get('E_TEXTCTRL_' + name);
+  a = {
+    num:    (name, def) => { const v = parseFloat(raw(name)); return Number.isFinite(v) ? v : def; },
+    int:    (name, def) => { const v = parseFloat(raw(name)); return Number.isFinite(v) ? Math.trunc(v) : def; },
+    bool:   (name, def = false) => { const v = m.get('E_CHECKBOX_' + name); return v == null ? def : (v === '1' || v === 'true'); },
+    choice: (name, def) => m.has('E_CHOICE_' + name) ? m.get('E_CHOICE_' + name) : def,
+    key:    k => m.get(k),
+  };
+  if (_xlSettingsCache.size > 300) _xlSettingsCache.clear();
+  _xlSettingsCache.set(str, a);
+  return a;
+}
+
+function _xlCells(W, H) { return new Array(W * H).fill(null); }
+
+// GetEffectTimeIntervalPosition(cycles): position within the current cycle, 0..1
+function _xlPosCycles(c, cycles) {
+  const per = c.periods + 1;
+  if (c.periods <= 0) return 0;
+  const ppc = per / cycles;
+  if (!(ppc > 1)) return 0;
+  let r = c.frame - Math.floor(c.frame / ppc) * ppc;
+  r /= (ppc - 1);
+  return r > 1 ? 1 : r;
+}
+
+// ── On (and Pulse, which is an On with a brightness ramp and fades) ──────────
+function _xlOn(c) {
+  const s = c.set, cells = _xlCells(c.W, c.H);
+  const start = s.int('Eff_On_Start', 100), end = s.int('Eff_On_End', 100);
+  if (s.bool('On_Shimmer') && c.frame % 2) return cells;   // one colour: odd frames off
+  let col = c.rgb;
+  if (!(start === 100 && end === 100)) {
+    const d = (start + (end - start) * _xlPosCycles(c, s.num('On_Cycles', 1))) / 100;
+    col = _xlHsv(c.hsv[0], c.hsv[1], c.hsv[2] * d);
+  }
+  return cells.fill(col);
+}
+
+// ── Color Wash ─────────────────────────────────────────────────────────────────
+function _xlColorWash(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  if (s.bool('ColorWash_Shimmer') && c.frame % 2) return cells;
+  const hf = s.bool('ColorWash_HFade'), vf = s.bool('ColorWash_VFade'), rev = s.bool('ColorWash_ReverseFades');
+  const halfW = (W - 1) / 2, halfH = (H - 1) / 2;
+  const [h, sat, v] = c.hsv;   // one palette colour, so the Cycles sweep has nothing to blend
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let mh = 1, mv = 1;
+    if (hf) { const d = Math.abs(x - halfW); mh = Math.min(1, Math.max(0, rev ? (halfW > 0 ? d / halfW : 0) : (halfW > 0 ? 1 - d / halfW : 1))); }
+    if (vf) { const d = Math.abs(y - halfH); mv = Math.min(1, Math.max(0, rev ? (halfH > 0 ? d / halfH : 0) : (halfH > 0 ? 1 - d / halfH : 1))); }
+    cells[y * W + x] = _xlHsv(h, sat, v * mh * mv);
+  }
+  return cells;
+}
+
+// ── Shimmer ────────────────────────────────────────────────────────────────────
+function _xlShimmer(c) {
+  const s = c.set, cells = _xlCells(c.W, c.H);
+  const duty = s.int('Shimmer_Duty_Factor', 50), cycles = s.num('Shimmer_Cycles', 1);
+  if (cycles > c.periods / 2) {
+    if ((c.frame % 2) !== 0) return cells;          // too fast: alternate on/off
+  } else {
+    let pos = _xlPosCycles(c, cycles);
+    if (pos > 1) pos = 0;
+    if (pos >= duty / 100) return cells;
+  }
+  return cells.fill(c.rgb);
+}
+
+// ── Bars (ISPC path; one palette colour) ───────────────────────────────────────
+const BARS_DIRS = ['up', 'down', 'expand', 'compress', 'Left', 'Right', 'H-expand', 'H-compress',
+                   'Alternate Up', 'Alternate Down', 'Alternate Left', 'Alternate Right'];
+function _xlBars(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  let dir = BARS_DIRS.indexOf(s.choice('Bars_Direction', 'up'));
+  if (dir < 0) dir = 0;                                   // Custom directions: not ported
+  const barCount = Math.max(1, s.int('Bars_BarCount', 1));
+  const pos = _xlPosCycles(c, s.num('Bars_Cycles', 1));
+  const center = s.num('Bars_Center', 0);
+  const highlight = s.bool('Bars_Highlight'), show3D = s.bool('Bars_3D'), gradient = s.bool('Bars_Gradient');
+  const vert = dir < 4 || dir === 8 || dir === 9;
+  const span = vert ? H : W;
+  const barSize = Math.max(1, Math.ceil(span / barCount));
+  const blockSize = Math.max(1, barSize);                 // colourCount (1) × barSize
+  let fOff = Math.trunc(pos * blockSize);
+  if (dir === 8 || dir === 9 || dir > 9) fOff = Math.floor(pos * barCount) * barSize;
+  const mapped = vert ? (dir > 4 ? dir - 8 : dir) : (dir > 9 ? dir - 6 : dir);
+  const newCenter = Math.trunc(span * (100 + Math.trunc(center)) / 200);
+  const [h, sat, v0] = c.hsv;
+  for (let py = 0; py < H; py++) for (let px = 0; px < W; px++) {
+    let p;
+    if (vert) {
+      p = mapped === 1 ? py : mapped === 2 ? (py <= newCenter ? py : 2 * newCenter - py)
+        : mapped === 3 ? (py >= newCenter ? py : 2 * newCenter - py) : H - py - 1;
+    } else {
+      p = mapped === 5 ? W - px - 1 : mapped === 6 ? (px <= newCenter ? px : 2 * newCenter - px)
+        : mapped === 7 ? (px >= newCenter ? px : 2 * newCenter - px) : px;
+    }
+    const n = 4 * blockSize + p + fOff;
+    const absBarN = Math.abs(n % barSize);
+    let col;
+    if (highlight && (n % barSize) === 0) col = [255, 255, 255];
+    else if (gradient) {
+      col = c.rgb;
+      if (show3D) { const k = (barSize - absBarN - 1) / barSize; col = col.map(ch => Math.trunc(ch * k)); }
+    } else {
+      const v = show3D ? v0 * (barSize - absBarN - 1) / barSize : v0;
+      col = _xlHsv(h, sat, v);
+    }
+    cells[py * W + px] = col;
+  }
+  return cells;
+}
+
+// ── Spirals ────────────────────────────────────────────────────────────────────
+function _xlSpirals(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  const repeat = s.int('Spirals_Count', 1) || 1;
+  const movement = s.num('Spirals_Movement', 1), rotation = s.num('Spirals_Rotation', 2);
+  const thickness = s.int('Spirals_Thickness', 50);
+  const show3D = s.bool('Spirals_3D'), grow = s.bool('Spirals_Grow'), shrink = s.bool('Spirals_Shrink');
+  const count = repeat;                                    // colourCount (1) × repeat
+  const delta = Math.trunc(W / count);
+  let thick = delta * thickness / 100 + 1;
+  const gap = delta - thick;
+  const dirn = movement > 0.001 ? 1 : movement < -0.001 ? -1 : 0;
+  const pos = _xlPosCycles(c, Math.abs(movement));
+  let tState = 0;
+  if (grow && shrink) tState = Math.trunc(pos <= 0.5 ? gap * (pos * 2) : gap * ((1 - pos) * 2));
+  else if (grow) tState = Math.trunc(gap * pos);
+  else if (shrink) tState = Math.trunc(gap * (1 - pos));
+  const state = Math.trunc(pos * W * 10 * dirn);
+  thick += tState;
+  const [h, sat, v] = c.hsv;
+  for (let ns = 0; ns < count; ns++) {
+    const base = Math.trunc(ns * delta);
+    for (let t = 0; t < thick; t++) {
+      const strand = (base + t) % W;
+      for (let y = 0; y < H; y++) {
+        let xd = (strand + state / 10 + y * rotation / H) % W;
+        if (xd < 0) xd += W;
+        const x = Math.trunc(xd);
+        let col = c.rgb;
+        if (show3D) col = _xlHsv(h, sat, v * (dirn < 0 ? (t + 1) / thick : (thick - t) / thick));
+        cells[y * W + x] = col;
+      }
+    }
+  }
+  return cells;
+}
+
+// ── Butterfly ──────────────────────────────────────────────────────────────────
+function _xlH2rgb(h) {
+  h = Math.min(1, Math.max(0, h));
+  const hue = h * 6, i = Math.floor(hue), f = hue - i;
+  const t = [[1, f, 0], [1 - f, 1, 0], [0, 1, f], [0, 1 - f, 1], [f, 0, 1], [1, 0, 1 - f]][i >= 6 ? 0 : i];
+  return t.map(ch => Math.trunc(ch * 255));
+}
+function _xlButterfly(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  const chunks = s.int('Butterfly_Chunks', 1), skip = s.int('Butterfly_Skip', 2) || 1;
+  const speed = s.int('Butterfly_Speed', 10), style = s.int('Butterfly_Style', 1);
+  const rainbow = s.choice('Butterfly_Colors', 'Rainbow') !== 'Palette';
+  const rev = s.choice('Butterfly_Direction', 'Normal') === 'Reverse';
+  const curState = Math.trunc(c.frame * speed * c.fms / 50);
+  const offset = (rev ? -1 : 1) * curState / 200;
+  const pi2 = 3.14159 * 2, rsz = pi2 / (H + W);
+  const show = h => (chunks <= 1 || (Math.trunc(h * chunks) % skip) !== 0) ? (rainbow ? _xlH2rgb(h) : c.rgb) : null;
+  let frm = 0, maxframe = H * 2;
+  if (style === 2 || style === 3) frm = Math.trunc(H * curState / 200) % maxframe;
+  let ptime = 0;
+  if (style > 5) ptime = (c.frame + 1) / ((style === 10 ? 3 : 5) * (101 - speed));
+  for (let y0 = 0; y0 < H; y0++) for (let x0 = 0; x0 < W; x0++) {
+    let x = x0, y = y0, h = 0, col = null;
+    if (style === 1 || style === 4) {
+      const n = (x * x - y * y) * Math.sin(offset + (x + y) * rsz);
+      const d = x * x + y * y;
+      if (style === 1) h = d > 0.001 ? Math.min(1, Math.max(0, Math.abs(n) / d)) : 0;
+      else { h = d > 0.001 ? n / d : 0; h -= Math.floor(h); if (h < 0) h = 1 + h; }
+      col = show(h);
+    } else if (style === 2) {
+      const f = frm < H ? frm + 1 : maxframe - frm;
+      const x1 = (x - W / 2) / f, y1 = (y - H / 2) / f;
+      col = show(Math.sqrt(x1 * x1 + y1 * y1));
+    } else if (style === 3) {
+      let f = frm < maxframe / 2 ? frm + 1 : maxframe - frm;
+      f = f * 0.1 + H / 60;
+      col = show(Math.sin((x - W / 2) / f) * Math.cos((y - H / 2) / f));
+    } else if (style === 5) {
+      if (x === 0 && y === 1) y += 1;
+      if (x === 1 && y === 0) x += 1;
+      const n = Math.abs((x * x - y * y) * Math.sin(offset + (x + y) * pi2 / (H * W)));
+      const d = x * x + y * y;
+      col = show(d > 0.001 ? n / d : 0);
+    } else {   // 6-10: plasma styles
+      const rx = x / W - 0.5, ry = y / H - 0.5;
+      let v = Math.sin(rx * 10 + ptime);
+      v += Math.sin(10 * (rx * Math.sin(ptime / 2) + ry * Math.cos(ptime / 3)) + ptime);
+      const cx = rx + 0.5 * Math.sin(ptime / 5), cy = ry + 0.5 * Math.cos(ptime / 3);
+      v += Math.sin(Math.sqrt(100 * (cx * cx + cy * cy) + 1 + ptime));
+      v += Math.sin(rx + ptime) + Math.sin((ry + ptime) / 2) + Math.sin((rx + ry + ptime) / 2);
+      v += Math.sin(Math.sqrt(rx * rx + ry * ry + 1) + ptime);
+      v /= 2;
+      const a = v * chunks * Math.PI, u = q => Math.min(255, Math.trunc((q + 1) * 128));
+      if (style === 6) col = [u(Math.sin(a)), u(Math.cos(a)), 0];
+      else if (style === 7) col = [1, u(Math.cos(a)), u(Math.sin(a))];
+      else if (style === 8) col = [u(Math.sin(a)), u(Math.sin(a + 2 * Math.PI / 3)), u(Math.sin(a + 4 * Math.PI / 3))];
+      else if (style === 9) { const g = u(Math.sin(a)); col = [g, g, g]; }
+      else col = [0, 0, 0];   // style 10 needs two palette colours
+    }
+    cells[y0 * W + x0] = col;
+  }
+  return cells;
+}
+
+// ── Plasma ─────────────────────────────────────────────────────────────────────
+const PLASMA_SCHEMES = ['Preset Colors 1', 'Preset Colors 2', 'Preset Colors 3', 'Preset Colors 4'];
+function _xlPlasma(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  const style = s.int('Plasma_Style', 1), density = s.int('Plasma_Line_Density', 1);
+  const speed = s.int('Plasma_Speed', 10);
+  const scheme = PLASMA_SCHEMES.indexOf(s.choice('Plasma_Color', 'Normal')) + 1;   // 0 = palette
+  const time = (c.frame + 1) / ((101 - speed) * 3);
+  const s5 = Math.sin(time / 5), c3 = Math.cos(time / 3), s2 = Math.sin(time / 2);
+  const u = q => Math.trunc((q + 1) * 255 / 2);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const rx = W > 1 ? x / (W - 1) : 0, ry = H > 1 ? y / (H - 1) : 0;
+    const cx = rx + 0.5 * s5, cy = ry + 0.5 * c3;
+    let v = Math.sin(rx * 10 + time);
+    v += Math.sin(10 * (rx * s2 + ry * c3) + time);
+    v += Math.sin(Math.sqrt(style * 50 * (cx * cx + cy * cy) + time));
+    v += Math.sin(rx + time) + Math.sin((ry + time) / 2) + Math.sin((rx + ry + time) / 2);
+    v += Math.sin(Math.sqrt(rx * rx + ry * ry) + time);
+    const a = v / 2 * density * Math.PI;
+    let col;
+    if (scheme === 0) col = c.rgb;                        // palette blend of one colour
+    else if (scheme === 1) col = [u(Math.sin(a)), u(Math.cos(a)), 0];
+    else if (scheme === 2) col = [1, u(Math.cos(a)), u(Math.sin(a))];
+    else if (scheme === 3) col = [u(Math.sin(a)), u(Math.sin(a + 2 * Math.PI / 3)), u(Math.sin(a + 4 * Math.PI / 3))];
+    else { const g = u(Math.sin(a)); col = [g, g, g]; }
+    cells[y * W + x] = col;
+  }
+  return cells;
+}
+
+// ── Marquee ────────────────────────────────────────────────────────────────────
+function _xlMarquee(c) {
+  const s = c.set, { W, H } = c, cells = _xlCells(W, H);
+  const band = s.int('Marquee_Band_Size', 3), skip = s.int('Marquee_Skip_Size', 0);
+  const thickness = s.int('Marquee_Thickness', 1), stagger = s.int('Marquee_Stagger', 0);
+  const speed = s.int('Marquee_Speed', 3), mStart = s.int('Marquee_Start', 0);
+  const xScale = s.int('Marquee_ScaleX', 100), yScale = s.int('Marquee_ScaleY', 100);
+  let xc = s.int('MarqueeXC', 0), yc = s.int('MarqueeYC', 0);
+  const sign = s.bool('Marquee_Reverse') ? -1 : 1;
+  const wrapX = s.bool('Marquee_WrapX'), wrapY = s.bool('Marquee_WrapY');
+  if (!s.bool('Marquee_PixelOffsets')) { xc = Math.trunc(xc * W / 100); yc = Math.trunc(yc * H / 100); }
+  const colorSize = Math.max(1, band + skip), repeat = colorSize;   // one palette colour
+  const x = Math.trunc(speed * c.frame / 5);
+  let x1 = 0, y1 = 0, x2 = Math.round(W * xScale / 100 - 1), y2 = Math.round(H * yScale / 100 - 1);
+  let pos = 0;
+  const shift = n => { pos = ((pos + n) % colorSize + colorSize) % colorSize; };
+  const put = (px, py) => {
+    if (wrapX) { px %= W; if (px < 0) px += W; }
+    if (wrapY) { py %= H; if (py < 0) py += H; }
+    if (px >= 0 && px < W && py >= 0 && py < H) cells[py * W + px] = pos < band ? c.rgb : null;
+    shift(sign);
+  };
+  for (let t = 0; t < thickness; t++) {
+    pos = (((x + mStart) % repeat) + repeat) % repeat % colorSize;
+    if (y2 !== y1) {
+      shift(t * (stagger + 1) * sign);
+      for (let px = x1; px <= x2; px++) put(px + xc, y2 + yc);
+      shift(t * 2 * sign);
+      for (let py = y2; py >= y1; py--) put(x2 + xc, py + yc);
+    }
+    shift(t * 2 * sign);
+    for (let px = x2; px >= x1; px--) put(px + xc, y1 + yc);
+    if (y2 !== y1) {
+      shift(t * 2 * sign);
+      for (let py = y1; py <= y2 - 1; py++) put(x1 + xc, py + yc);
+    }
+    x1++; y1++; x2--; y2--;
+  }
+  return cells;
+}
+
+// ── Chase (SingleStrand chase; engine above) ───────────────────────────────────
+function _xlChase(c) {
+  const p = _chaseParams(c.settingsStr);
+  const cols = _chaseFrame(p, c.W, c.H, c.periods > 0 ? c.frame / c.periods : 0, c.rgb);
+  if (p.groupAll && c.H > 1) return cols;                // already indexed y*W + x
+  const cells = _xlCells(c.W, c.H);
+  for (let y = 0; y < c.H; y++) for (let x = 0; x < c.W; x++) cells[y * c.W + x] = cols[x];
+  return cells;
+}
+
+// ── Rainbow (SingleStrand FX, the WS2812FX/WLED library) ───────────────────────
+// xLights maps FX names by index: "Rainbow" is mode_rainbow_cycle (a rainbow spread
+// across the strip, scrolling) and "Colorloop" is mode_rainbow (the whole strip
+// cycling). The strip runs along buffer x; each position paints its whole column.
+function _xlWheel(pos) {
+  pos = 255 - (pos & 255);
+  if (pos < 85) return [255 - pos * 3, 0, pos * 3];
+  if (pos < 170) { pos -= 85; return [0, pos * 3, 255 - pos * 3]; }
+  pos -= 170; return [pos * 3, 255 - pos * 3, 0];
+}
+function _xlRainbow(c) {
+  const s = c.set, { W, H } = c;
+  const mode = s.choice('SingleStrand_FX', 'Blink');
+  if (mode !== 'Rainbow' && mode !== 'Colorloop') return null;   // other FX modes: not ported
+  const intensity = s.int('FX_Intensity', 128), speed = s.int('FX_Speed', 128);
+  const now = c.frame * c.fms;
+  const counter = ((now * ((speed >> 2) + 2)) & 0xFFFF) >> 8;
+  const cells = _xlCells(W, H);
+  for (let i = 0; i < W; i++) {
+    let col;
+    if (mode === 'Rainbow') {
+      col = _xlWheel(Math.trunc(i * (16 << Math.trunc(intensity / 29)) / W) + counter);
+    } else {
+      col = _xlWheel(counter);
+      if (intensity < 128) { const b = 128 - intensity; col = col.map(ch => Math.trunc((ch * (255 - b) + 255 * b) / 255)); }
+    }
+    for (let y = 0; y < H; y++) cells[y * W + i] = col;
+  }
+  return cells;
+}
+
+// ── Strobe (stateful) ──────────────────────────────────────────────────────────
+const _xlStrobe = {
+  init: () => ({ list: null }),
+  step(c, st) {
+    const s = c.set, { W, H } = c, r = st.rng, cells = _xlCells(W, H);
+    const N = s.int('Number_Strobes', 3), D = Math.max(1, s.int('Strobe_Duration', 10));
+    const type = s.int('Strobe_Type', 1);
+    if (!st.list) {
+      st.list = [];
+      for (let i = 0; i < N * D; i++) st.list.push({ x: r.int(0, W - 1), y: r.int(0, H - 1), d: i % D });
+    }
+    while (st.list.length < N * D) st.list.push({ x: r.int(0, W - 1), y: r.int(0, H - 1), d: D });
+    const set = (x, y, col) => { if (x >= 0 && x < W && y >= 0 && y < H) cells[y * W + x] = col; };
+    st.list = st.list.filter(sb => {
+      const flip = (type === 2 || type === 4) ? r.int(0, 1) : 0;
+      const { x, y, d } = sb;
+      if (d > 0) set(x, y, c.rgb);
+      const dim = _xlHsv(c.hsv[0], c.hsv[1], c.hsv[2] * (d === 1 ? 0.5 : d === 2 ? 0.75 : 1));
+      if (type === 2) { if (!flip) { set(x, y - 1, dim); set(x, y + 1, dim); } else { set(x - 1, y, dim); set(x + 1, y, dim); } }
+      if (type === 3 || (type === 4 && !flip)) { set(x, y - 1, dim); set(x, y + 1, dim); set(x - 1, y, dim); set(x + 1, y, dim); }
+      if (type === 4 && flip) { set(x + 1, y - 1, dim); set(x + 1, y + 1, dim); set(x - 1, y - 1, dim); set(x - 1, y + 1, dim); }
+      sb.d--;
+      return sb.d > 0;
+    });
+    return cells;
+  },
+};
+
+// ── Twinkle (stateful, "Old Render Method") ────────────────────────────────────
+const _xlTwinkle = {
+  init: () => ({ lights: null }),
+  step(c, st) {
+    const s = c.set, { W, H } = c, r = st.rng, cells = _xlCells(W, H);
+    const count = s.int('Twinkle_Count', 3), steps = s.int('Twinkle_Steps', 30);
+    const strobe = s.bool('Twinkle_Strobe'), reRandom = s.bool('Twinkle_ReRandom');
+    const total = W * H;
+    let lights = Math.round(total * count / 100);
+    if (total === 1) lights = 1;
+    let step = lights > 0 ? Math.trunc(total / lights) : 1;
+    if (step < 1) step = 1;
+    const maxMod = Math.max(2, steps), maxMod2 = Math.max(1, Math.trunc(maxMod / 2));
+    if (!st.lights || st.n !== lights) {
+      st.n = lights; st.lights = [];
+      let i = 0;
+      for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+        i++;
+        if (i % step === 1 || step === 1) st.lights.push({ x, y, d: Math.min(maxMod - 1, Math.trunc(r.f() * maxMod)) });
+      }
+    }
+    for (const lt of st.lights) {
+      lt.d++;
+      if (lt.d < 0) continue;
+      if (lt.d === maxMod) { lt.d = 0; if (reRandom) lt.d -= r.int(0, 0x7fffffff) % maxMod2; }
+      const i7 = lt.d;
+      let v = i7 <= maxMod2 ? i7 / maxMod2 : (maxMod - i7) / maxMod2;
+      if (v < 0) v = 0;
+      if (strobe) v = i7 === maxMod2 ? 1 : 0;
+      cells[lt.y * W + lt.x] = _xlHsv(c.hsv[0], c.hsv[1], v);   // value replaced, as in xLights
+    }
+    return cells;
+  },
+};
+
+// ── Fire (stateful, "New Render Method") ───────────────────────────────────────
+const _xlFireLut = (() => {
+  const lut = [];
+  for (let i = 0; i < 100; i++) lut.push([0, 1, i / 100]);
+  for (let i = 0; i < 100; i++) lut.push([i * 0.00166666, 1, 1]);
+  return lut;
+})();
+const _xlFire = {
+  init: () => ({ grid: null }),
+  step(c, st) {
+    const s = c.set, r = st.rng, cells = _xlCells(c.W, c.H);
+    let pct = s.int('Fire_Height', 50);
+    const hueShift = s.int('Fire_HueShift', 0), cycles = s.num('Fire_GrowthCycles', 0);
+    const loc = ['Bottom', 'Top', 'Left', 'Right'].indexOf(s.choice('Fire_Location', 'Bottom'));
+    if (cycles > 0) { const a = _xlPosCycles(c, cycles); pct += Math.trunc((0.5 - Math.abs(a - 0.5)) * 100); }
+    if (pct < 1) pct = 1;
+    const side = loc === 2 || loc === 3;
+    const w = side ? c.H : c.W, h = Math.max(1, side ? c.W : c.H);
+    const stepV = Math.max(1, Math.trunc(Math.trunc(255 * 100 / h) / pct));
+    const G = (x, y) => (x >= 0 && x < w && y >= 0 && y < h) ? st.grid[y * w + x] : -1;
+    const next = (x, y) => {
+      let sum = 0, n = 0;
+      for (const v of [G(x - 1, y - 1), G(x, y - 1), G(x + 1, y - 1), G(x, y - 2)]) if (v >= 0) { sum += v; n++; }
+      let ni = n > 0 ? Math.trunc(sum / n) : 0;
+      if (ni > 0) ni = Math.min(199, Math.max(0, ni + (r.int(0, 99) < 20 ? stepV : -stepV)));
+      return ni;
+    };
+    if (!st.grid || st.w !== w || st.h !== h) {
+      // First frame: the classic pass builds the whole flame at once, bottom up.
+      st.w = w; st.h = h; st.grid = new Array(w * h).fill(0);
+      for (let x = 0; x < w; x++) st.grid[x] = 150 + r.int(0, 49);
+      for (let y = 1; y < h; y++) for (let x = 0; x < w; x++) st.grid[y * w + x] = next(x, y);
+    } else {
+      // Later frames: heat rises one row per frame (top-down, from last frame's rows).
+      for (let y = h - 1; y >= 1; y--) for (let x = 0; x < w; x++) st.grid[y * w + x] = next(x, y);
+      for (let x = 0; x < w; x++) st.grid[x] = 150 + r.int(0, 49);
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let xp = x, yp = y;
+      if (loc === 1 || loc === 3) yp = h - y - 1;
+      if (side) [xp, yp] = [yp, xp];
+      const [hh, ss, vv] = _xlFireLut[Math.max(0, st.grid[y * w + x])];
+      cells[yp * c.W + xp] = _xlHsv(hueShift > 0 ? Math.min(1, hh + hueShift / 100) : hh, ss, vv);
+    }
+    return cells;
+  },
+};
+
+// ── Snowflakes (stateful) ──────────────────────────────────────────────────────
+// The hidden buffer holds 0 (empty), 1/2 (Driving pattern colour 1/2), or 10+type
+// (a Falling flake of that shape).
+const _xlSnowflakes = {
+  init: () => ({ temp: null }),
+  step(c, st) {
+    const s = c.set, { W, H } = c, r = st.rng, cells = _xlCells(W, H);
+    const count = s.int('Snowflakes_Count', 5), type = s.int('Snowflakes_Type', 1);
+    const speed = s.int('Snowflakes_Speed', 10), falling = s.choice('Falling', 'Driving');
+    const driving = falling === 'Driving';
+    const col1 = c.rgb, col2 = [255, 255, 255];     // a one-colour palette's second colour is white
+    const T = (x, y) => (x >= 0 && x < W && y >= 0 && y < H) ? st.temp[y * W + x] : 0;
+    const setT = (x, y, v) => { if (x >= 0 && x < W && y >= 0 && y < H) st.temp[y * W + x] = v; };
+    if (!st.temp) {
+      st.temp = new Array(W * H).fill(0); st.state = 0;
+      for (let n = 0; n < count; n++) {
+        let dy = Math.trunc(H / 4);
+        const y0 = (n % 4) * dy;
+        if (y0 + dy > H) dy = H - y0;
+        if (dy < 1) dy = 1;
+        let x = 0, y = 0;
+        for (let k = 0; k < 20; k++) {
+          x = r.int(0, W - 1); y = y0 + r.int(0, dy - 1);
+          if (T(x, y) === 0) { st.state++; break; }
+        }
+        const t = type === 0 ? r.int(0, 8) : type - 1;
+        const pad = [0, 1, 1, 2, 2, -1, 1, 2, 1][t] || 0;
+        if (pad > 0) { if (x < pad) x += pad; if (y < pad) y += pad; if (x > W - 1 - pad) x -= pad; if (y > H - 1 - pad) y -= pad; }
+        if (t === 5) { if (x > W - 2) x -= 1; if (y > H - 2) y -= 1; }
+        if (!driving) { setT(x, y, 10 + t); continue; }
+        const A = 1, B = 2;
+        const P = {
+          0: [[0, 0, A]],
+          1: [[0, 0, A], [-1, 0, B], [1, 0, B], [0, -1, B], [0, 1, B]],
+          3: [[0, 0, A], [-1, 0, B], [1, 0, B], [0, -1, B], [0, 1, B], [-2, 0, B], [2, 0, B], [0, -2, B], [0, 2, B]],
+          4: [[0, 0, A], [-1, 0, B], [1, 0, B], [0, -1, B], [0, 1, B], [-1, 2, B], [1, 2, B], [-1, -2, B], [1, -2, B], [2, -1, B], [2, 1, B], [-2, -1, B], [-2, 1, B]],
+          5: [[0, 0, A], [1, 0, A], [1, 1, A], [0, 1, A]],
+          6: [[0, 0, A], [1, 0, A], [0, 1, A], [-1, 0, A], [0, -1, A]],
+          7: [[0, 2, A], [-1, 1, A], [0, 1, A], [1, 1, A], [-2, 0, A], [-1, 0, A], [0, 0, A], [1, 0, A], [2, 0, A], [-1, -1, A], [0, -1, A], [1, -1, A], [0, -2, A]],
+          8: [[0, 0, A], [1, 1, A], [-1, 1, A], [-1, -1, A], [1, -1, A]],
+        };
+        if (t === 2) {
+          setT(x, y, A);
+          if (r.int(0, 99) > 50) { setT(x - 1, y, B); setT(x + 1, y, B); } else { setT(x, y - 1, B); setT(x, y + 1, B); }
+        } else (P[t] || []).forEach(([dx, dy2, v]) => setT(x + dx, y + dy2, v));
+      }
+    }
+    const f = c.frame;
+    if (driving) {
+      const mv = Math.trunc(f * speed * c.fms / 50);
+      for (let x = 0; x < W; x++) {
+        const nx = (x + Math.trunc(mv / 20)) % W;
+        let nx2 = (x - Math.trunc(mv / 20)) % W; if (nx2 < 0) nx2 += W;
+        for (let y = 0; y < H; y++) {
+          const ny = (y + Math.trunc(mv / 10)) % H, ny2 = (ny + Math.trunc(H / 2)) % H;
+          let v = T(nx, ny);
+          if (v === 0) v = T(nx2, ny2);
+          if (v === 1) cells[y * W + x] = col1; else if (v === 2) cells[y * W + x] = col2;
+        }
+      }
+      return cells;
+    }
+    // Falling / Falling & Accumulating
+    const moves = (x, y) => {
+      if (y === 0) return 0;
+      let m = 0;
+      if (T(x - 1 < 0 ? x - 1 + W : x - 1, y - 1) === 0) m += 1;
+      if (T(x, y - 1) === 0) m += 2;
+      if (T(x + 1 >= W ? x + 1 - W : x + 1, y - 1) === 0) m += 4;
+      return m;
+    };
+    if (f > 0 && Math.trunc(f * (speed + 1) / 30) !== Math.trunc((f - 1) * (speed + 1) / 30)) {
+      const accum = falling === 'Falling & Accumulating';
+      for (let x = 0; x < W; x++) for (let y = accum ? 1 : 0; y < H; y++) {
+        const v = T(x, y);
+        if (v === 0) continue;
+        const m = moves(x, y);
+        if (!(m > 0 || (falling === 'Falling' && y === 0))) continue;
+        let x0;
+        const pick = r.int(0, 8);
+        if (pick === 0) x0 = (m & 1) ? x - 1 : (m & 2) ? x : x + 1;
+        else if (pick === 1) x0 = (m & 4) ? x + 1 : (m & 2) ? x : x - 1;
+        else if (m & 2) x0 = x;
+        else if ((m & 5) === 4) x0 = x + 1;
+        else if ((m & 5) === 1) x0 = x - 1;
+        else x0 = r.int(0, 1) === 0 ? x + 1 : x - 1;
+        if (x0 < 0) x0 += W; else if (x0 >= W) x0 -= W;
+        setT(x, y, 0);
+        if (y - 1 >= 0) { setT(x0, y - 1, v); if (accum && moves(x0, y - 1) === 0) st.state--; }
+        else st.state--;
+      }
+      let k = 0, full = 0;
+      while (st.state < count && k < 20) {
+        const x = r.int(0, W - 1);
+        if (T(x, H - 1) === 0) {
+          st.state++;
+          setT(x, H - 1, 10 + (type === 0 ? r.int(0, 8) : type - 1));
+          if (moves(x, H - 1) === 0) full++;
+        }
+        k++;
+      }
+      st.state -= full;
+    }
+    const put = (x, y, col) => { if (x >= 0 && x < W && y >= 0 && y < H) cells[y * W + x] = col; };
+    const outline = (x, y) => { if (x >= 0 && x < W && y >= 0 && y < H && T(x, y) === 0) cells[y * W + x] = col2; };
+    const atBottom = (x, y) => { for (let yt = 0; yt < y - 1; yt++) if (T(x, yt) === 0) return false; return true; };
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const v = T(x, y);
+      if (v < 10) continue;
+      const t = v - 10;
+      put(x, y, col1);
+      if (t === 1) [[-1, 0], [1, 0], [0, -1], [0, 1]].forEach(([dx, dy]) => outline(x + dx, y + dy));
+      else if (t === 2) {
+        if (atBottom(x, y) || r.int(0, 99) > 50) { outline(x - 1, y); outline(x + 1, y); }
+        else { outline(x, y - 1); outline(x, y + 1); }
+      } else if (t === 3) { for (let i = 1; i <= 2; i++) { outline(x - i, y); outline(x + i, y); outline(x, y - i); outline(x, y + i); } }
+      else if (t === 4) [[-1, 0], [1, 0], [0, 1], [0, -1], [-1, 2], [1, 2], [-1, -2], [1, -2], [2, -1], [2, 1], [-2, -1], [-2, 1]].forEach(([dx, dy]) => outline(x + dx, y + dy));
+      else if (t === 5) [[1, 0], [1, 1], [0, 1]].forEach(([dx, dy]) => put(x + dx, y + dy, col1));
+      else if (t === 6) [[1, 0], [0, 1], [-1, 0], [0, -1]].forEach(([dx, dy]) => put(x + dx, y + dy, col1));
+      else if (t === 7) [[0, 2], [-1, 1], [0, 1], [1, 1], [-2, 0], [-1, 0], [1, 0], [2, 0], [-1, -1], [0, -1], [1, -1], [0, -2]].forEach(([dx, dy]) => put(x + dx, y + dy, col1));
+      else if (t === 8) [[1, 1], [-1, 1], [-1, -1], [1, -1]].forEach(([dx, dy]) => put(x + dx, y + dy, col1));
+    }
+    return cells;
+  },
+};
+
+// ── Meteors (stateful) ─────────────────────────────────────────────────────────
+const METEOR_EFFECTS = ['Down', 'Up', 'Left', 'Right', 'Implode', 'Explode', 'Icicles', 'Icicles + bkg'];
+const _xlMeteors = {
+  init: () => ({ list: [], es: null }),
+  step(c, st) {
+    const s = c.set, { W, H } = c, r = st.rng, cells = _xlCells(W, H);
+    let mode = METEOR_EFFECTS.indexOf(s.choice('Meteors_Effect', 'Down'));
+    if (mode < 0) mode = 0;
+    const count = s.int('Meteors_Count', 10), length = s.int('Meteors_Length', 25);
+    const swirl = s.int('Meteors_Swirl_Intensity', 0), mSpeed = s.int('Meteors_Speed', 10);
+    const scheme = Math.max(0, ['Rainbow', 'Range', 'Palette'].indexOf(s.choice('Meteors_Type', 'Rainbow')));
+    const fadeDist = s.bool('FadeWithDistance');
+    const inc = mSpeed === 0 ? 0.1 : mSpeed * c.fms / 50;
+    if (st.es == null) st.es = inc;                       // needToInit seeds one step
+    st.es += inc;
+    const spd = Math.trunc(st.es / 4);
+    st.es -= spd * 4;
+    const meteorHsv = () => scheme === 0 ? null
+      : scheme === 1 ? [c.hsv[0], c.hsv[1], 1]           // range of one colour: itself, full value
+      : c.hsv.slice();
+    const shade = (m, n, ph, fade) => {
+      const hsv = scheme === 0 ? [r.f(), 1, 1] : m.hsv;
+      return _xlHsv(hsv[0], hsv[1], hsv[2] * fade);
+    };
+    const set = (x, y, col) => { if (x >= 0 && x < W && y >= 0 && y < H) cells[y * W + x] = col; };
+    const sinT = Math.sin;
+
+    if (mode <= 3 || mode >= 6) {
+      const horiz = mode === 2 || mode === 3, icicle = mode >= 6;
+      const span = horiz ? W : H;
+      const TL = Math.max(1, span < 10 ? Math.trunc(length / 10) : Math.trunc(span * length / 100));
+      for (let i = 0; i < (horiz ? H : W); i++) {
+        if (r.int(0, 199) < count) {
+          const m = horiz ? { x: W - 1, y: i } : { x: i, y: H - 1 };
+          if (icicle) m.h = Math.trunc(r.int(0, 2 * H - 1) / 3);
+          m.hsv = meteorHsv();
+          st.list.push(m);
+        }
+      }
+      // Draw (later meteors win where they overlap)
+      if (mode === 7) {
+        for (let y = 0; y < H; y++) for (let x = 0; x < W; x += 3) {
+          const k = Math.trunc(x / 3) % 5, sft = [0, 5, 1, 2, 4][k], yy = y - sft;
+          if (yy >= 0 && yy % 3 === 0) set(x, y, [100, 50, 255]);
+        }
+      }
+      st.list.forEach((m, n) => {
+        const pos = horiz ? m.x : m.y;
+        const a = (horiz ? m.y : m.x) + Math.trunc(swirl * (horiz ? H : W) / 80 * sinT(pos / 5 + n / 100));
+        for (let ph = 0; ph <= TL; ph++) {
+          if (icicle) {
+            const y = m.y + ph;
+            if (y < m.h) continue;
+            const colored = ph === 0 || ph <= m.h - m.y;
+            set(a, y, colored ? (scheme === 0 ? _xlHsv(r.f(), 1, 1) : _xlHsv(m.hsv[0], m.hsv[1], m.hsv[2])) : _xlHsv(0, 0, 0.4));
+            continue;
+          }
+          const fade = 1 - ph / TL;
+          if (horiz) set(mode === 2 ? m.x + ph : W - m.x - ph, a, shade(m, n, ph, fade));
+          else set(a, mode === 0 ? m.y + ph : H - m.y - ph, shade(m, n, ph, fade));
+        }
+      });
+      // Move, then drop the ones that have left the buffer
+      st.list.forEach(m => { if (horiz) m.x -= spd; else m.y -= spd; });
+      st.list = st.list.filter(m => icicle ? !(m.y < -m.h) : (horiz ? m.x : m.y) + TL >= 0);
+      return cells;
+    }
+
+    // Implode (4) / Explode (5)
+    const xo = s.int('Meteors_XOffset', 0), yo = s.int('Meteors_YOffset', 0);
+    const cx = Math.trunc(W / 2) + Math.trunc(Math.trunc(xo * W / 2) / 100);
+    const cy = Math.trunc(H / 2) + Math.trunc(Math.trunc(yo * H / 2) / 100);
+    const maxdiag = Math.trunc(Math.max(Math.hypot(cx, cy), Math.hypot(cx, H - cy), Math.hypot(W - cx, cy), Math.hypot(W - cx, H - cy)));
+    const TL = Math.max(1, maxdiag < 10 ? Math.trunc(length / 10) : Math.trunc(maxdiag * length / 100));
+    const implode = mode === 4;
+    for (let i = 0; i < Math.min(W, H); i++) {
+      if (r.int(0, 199) < count) {
+        const ang = H === 1 ? r.int(0, 1) * Math.PI : W === 1 ? r.int(0, 1) * Math.PI - Math.PI / 2 : r.f() * 2 * Math.PI;
+        const m = { dx: Math.cos(ang), dy: Math.sin(ang), hsv: meteorHsv() };
+        m.x = implode ? cx + (maxdiag + TL) * m.dx : cx;
+        m.y = implode ? cy + (maxdiag + TL) * m.dy : cy;
+        st.list.push(m);
+      }
+    }
+    st.list.forEach((m, n) => {
+      let cut = TL + 1;
+      if (implode && !(Math.hypot(m.x - cx, m.y - cy) - TL > 8)) {
+        for (let ph = 0; ph <= TL; ph++) {
+          const x = Math.trunc(m.x - m.dx * ph), y = Math.trunc(m.y - m.dy * ph);
+          if (Math.abs(y - cy) < 2 && Math.abs(x - cx) < 2) { cut = ph; break; }
+        }
+      }
+      for (let ph = 0; ph < cut; ph++) {
+        const x = Math.trunc(implode ? m.x - m.dx * ph : m.x + m.dx * ph);
+        const y = Math.trunc(implode ? m.y - m.dy * ph : m.y + m.dy * ph);
+        if (x < 0 || x >= W || y < 0 || y >= H) continue;
+        const hsv = scheme === 0 ? [r.f(), 1, 1] : m.hsv.slice();
+        if (fadeDist) hsv[2] *= Math.max(10, Math.trunc(Math.hypot(x - cx, y - cy))) / maxdiag;
+        set(x, y, _xlHsv(hsv[0], hsv[1], hsv[2] * ph / TL));
+      }
+    });
+    st.list.forEach(m => {
+      const hd = fadeDist && implode ? Math.max(0.1, Math.hypot(m.x - cx, m.y - cy) / maxdiag) : 1;
+      const k = implode ? -spd * hd : spd;
+      m.x += m.dx * k; m.y += m.dy * k;
+    });
+    st.list = st.list.filter(m => implode
+      ? !(Math.abs(m.y - cy) < 2 && Math.abs(m.x - cx) < 2)
+      : !(m.y < 0 || m.x < 0 || m.y > H || m.x > W));
+    return cells;
+  },
+};
+
+// ── Fireworks (stateful) ───────────────────────────────────────────────────────
+const _xlFireworks = {
+  init: () => ({ fireAt: null, works: [] }),
+  step(c, st) {
+    const s = c.set, { W, H } = c, r = st.rng, cells = _xlCells(W, H);
+    const explosions = s.int('Fireworks_Explosions', 16), particles = s.int('Fireworks_Count', 50);
+    const velocity = s.num('Fireworks_Velocity', 2), fade = s.int('Fireworks_Fade', 50);
+    const xv = s.int('Fireworks_XVelocity', 0), yv = s.int('Fireworks_YVelocity', 0);
+    const xl = s.int('Fireworks_XLocation', -1), yl = s.int('Fireworks_YLocation', -1);
+    const gravity = s.bool('Fireworks_Gravity', true), hold = s.bool('Fireworks_HoldColour', true);
+    const fps = 1000 / c.fms;
+    if (!st.fireAt) {
+      st.fireAt = [];
+      for (let i = 0; i < explosions; i++) st.fireAt.push(Math.trunc(r.f() * c.periods));
+    }
+    const at = (o, size) => {
+      if (o >= 0) return Math.trunc(o * size / 100);
+      const a = Math.trunc(0.25 * size), b = Math.trunc(0.75 * size);
+      return b - a > 0 ? a + r.int(0, b - a - 1) : 0;
+    };
+    st.fireAt.forEach(fr => {
+      if (fr !== c.frame) return;
+      const x0 = at(xl, W), y0 = at(yl, H), ps = [];
+      for (let i = 0; i < particles; i++) {
+        const ev = (r.f() * 2 - 1) * velocity, ang = 2 * Math.PI * r.f();
+        ps.push({ x: x0, y: y0, vx: 3 * xv / 100 + ev * Math.cos(ang), vy: 3 * -yv / 100 + ev * Math.sin(ang), age: 0 });
+      }
+      st.works.push({ ps, cycles: 0, done: false });
+    });
+    const pDone = p => fade < p.age * 2 || p.x < 0 || p.y < 0 || p.x > W || (!gravity && p.y > H);
+    const wDone = w => w.done || w.cycles >= 500 || (w.done = w.ps.every(pDone));
+    for (const w of st.works) {
+      if (wDone(w)) continue;
+      for (const p of w.ps) {
+        const v = Math.max(0, (10 * fade - p.age * 20) / (10 * fade));
+        const x = Math.trunc(p.x), y = Math.trunc(p.y);
+        if (x >= 0 && x < W && y >= 0 && y < H) cells[y * W + x] = _xlHsv(c.hsv[0], c.hsv[1], v);
+      }
+    }
+    for (const w of st.works) {
+      if (wDone(w)) continue;
+      w.cycles++;
+      for (const p of w.ps) { p.x += p.vx; if (gravity) p.vy += 0.98 / fps; p.y += -p.vy; p.age++; }
+      if (wDone(w)) w.ps = [];
+    }
+    st.works = st.works.filter(w => !w.done || w.ps.length);
+    return cells;
+  },
+};
+
+const XL_FX = {
+  'On': _xlOn, 'Pulse': _xlOn, 'Color Wash': _xlColorWash, 'Shimmer': _xlShimmer,
+  'Bars': _xlBars, 'Spirals': _xlSpirals, 'Butterfly': _xlButterfly, 'Plasma': _xlPlasma,
+  'Marquee': _xlMarquee, 'Chase': _xlChase, 'Rainbow': _xlRainbow,
+  'Strobe': _xlStrobe, 'Twinkle': _xlTwinkle, 'Fire': _xlFire, 'Snowflakes': _xlSnowflakes,
+  'Meteors': _xlMeteors, 'Fireworks': _xlFireworks,
+};
+
+// One frame of `eff` on a W×H buffer, as cells[y*W + x] (null = off), or null when
+// the effect has no port. el/dur are frame-stepped seconds (see effectClock).
+function xlEffectCells(eff, W, H, el, dur) {
+  const impl = XL_FX[eff.type];
+  if (!impl || W < 1 || H < 1) return null;
+  const fms = S.frameMs || 50;
+  const frame = Math.max(0, Math.round(el * 1000 / fms));
+  const periods = Math.max(0, Math.round(dur * 1000 / fms));
+  const settingsStr = eff.xlSettings || effectSettings(eff.type);
+  const key = [eff.id ?? 'preview', eff.type, settingsStr, eff.color, W, H, periods, eff.startTime ?? ''].join('|');
+  let e = _xlCache.get(key);
+  if (e && e.frame === frame) return e.cells;
+  const ctx = { W, H, frame, periods, fms, settingsStr, set: _xlSettings(settingsStr),
+                rgb: _rgb3(eff.color || '#ffffff'), hsv: _rgbToHsv(_rgb3(eff.color || '#ffffff')) };
+  if (_xlCache.size > 400) _xlCache.clear();
+  if (typeof impl === 'function') {
+    const cells = impl(ctx);
+    _xlCache.set(key, { frame, cells });
+    return cells;
+  }
+  // Stateful: simulate forward from the effect's start (or from the last frame shown).
+  if (!e || !e.state || frame < e.frame) {
+    e = { frame: -1, cells: null, state: Object.assign(impl.init(), { rng: _xlRng(_xlSeed(key)) }) };
+    _xlCache.set(key, e);
+  }
+  for (let f = e.frame + 1; f <= frame; f++) { ctx.frame = f; e.cells = impl.step(ctx, e.state); e.frame = f; }
+  return e.cells;
+}
+
+// Transition fades (T_TEXTCTRL_Fadein / Fadeout, seconds), as xLights' layer
+// mixer applies them: a factor on the HSV value over the first / last frames.
+function xlFadeFactor(eff, el, dur) {
+  const str = eff.xlSettings || effectSettings(eff.type);
+  if (str.indexOf('T_TEXTCTRL_Fade') < 0) return 1;
+  const m = parseSettingsStr(str), fms = S.frameMs || 50;
+  const inSteps  = Math.trunc(Math.trunc((parseFloat(m.get('T_TEXTCTRL_Fadein'))  || 0) * 1000) / fms);
+  const outSteps = Math.trunc(Math.trunc((parseFloat(m.get('T_TEXTCTRL_Fadeout')) || 0) * 1000) / fms);
+  const frame = Math.round(el * 1000 / fms), periods = Math.round(dur * 1000 / fms);
+  let fin = 1, fout = 1;
+  if (inSteps && frame < inSteps) fin = (frame + 1) / inSteps;
+  if (outSteps && frame > periods - outSteps) fout = 1 - (frame - (periods - outSteps)) / outSteps;
+  if (fout < 1) return fin < 1 ? (fin + fout) / 2 : fout;
+  return fin < 1 ? fin : 1;
+}
+
+// Rainbow FX modes that aren't ported yet fall back to this sweep.
 function _fxRainbow(idx, n, el) {
   return _hsv3(((idx/Math.max(1,n-1))*360 + el*5*36) % 360, 1, 1);
 }
 
-// Snowflakes — E_SLIDER_Snowflakes_Count=5
-// White particles fall from ny=0 (top) toward ny=1 (bottom)
-function _fxSnowflakes(idx, n, el, nx, ny) {
-  let bri = 0;
-  for (let i = 0; i < 5; i++) {
-    const sx = ((Math.sin(i*127.1)*43758.5)%1+1)%1;
-    const sp = 0.12 + ((Math.sin(i*311.7)*9999)%1+1)%1 * 0.18;
-    const sy = (el * sp) % 1.0;
-    const d  = Math.hypot((nx-sx)*1.8, ny-sy);
-    if (d < 0.14) bri = Math.max(bri, 1 - d/0.14);
-  }
-  const v = ~~(bri*255); return [v,v,v];
-}
-
-// Shimmer — E_SLIDER_Shimmer_Duty_Factor=50
-// All pixels flash on/off together at ~10 Hz (50% duty cycle)
-function _fxShimmer(col, el) {
-  return Math.floor(el * 10) % 2 === 0 ? _rgb3(col) : [0,0,0];
-}
-
-// Strobe — E_SLIDER_Number_Strobes=3, E_SLIDER_Strobe_Duration=10
-// Three short flashes per second; very brief on-time (10% of 200ms = 20ms flash)
-function _fxStrobe(col, el) {
-  return (el % 0.2) < 0.02 ? _rgb3(col) : [0,0,0];
-}
-
-// Bars — E_SLIDER_Bars_BarCount=1, E_CHOICE_Bars_Direction=up
-// Colour bar scrolls from ny=1 (bottom) to ny=0 (top) once per duration
-function _fxBars(col, el, dur, ny) {
-  const phase = (el / dur) % 1.0;
-  // bar occupies 50% of the height; front edge travels ny=1→0
-  const front = 1 - phase;
-  const inBar = ny >= front && ny < front + 0.5;
-  if (!inBar) return [0,0,0];
-  // slight gradient inside the bar
-  const t = (ny - front) / 0.5;
-  return _sc(_rgb3(col), 1 - t * 0.35);
-}
-
-// Meteors — E_SLIDER_Meteors_Count=10, E_SLIDER_Meteors_Length=25
-// Streaks fall from top (ny=0) to bottom (ny=1) with fading tails
-function _fxMeteors(col, idx, n, el, nx, ny) {
-  const NUM = 5, TAIL = 0.25;
-  const [r0,g0,b0] = _rgb3(col);
-  let maxBri = 0;
-  for (let i = 0; i < NUM; i++) {
-    const sx   = ((Math.sin(i*271.4)*93758)%1+1)%1;      // x-lane 0→1
-    const spd  = 0.15 + ((Math.sin(i*391.7)*9999)%1+1)%1 * 0.25;
-    const head = (el * spd) % 1.0;                        // ny position of meteor head
-    const dx   = Math.abs(nx - sx) * 2;                   // lateral distance (scaled)
-    if (dx > 0.35) continue;                              // not in our lane
-    const dy = head - ny;                                 // ny: positive = behind (tail)
-    if (dy < 0 || dy > TAIL) continue;                   // outside tail length
-    const bri = (1 - dy / TAIL) * (1 - dx / 0.35);
-    maxBri = Math.max(maxBri, bri);
-  }
-  return [~~(r0*maxBri), ~~(g0*maxBri), ~~(b0*maxBri)];
-}
-
-// Spirals — E_SLIDER_Spirals_Count=3, E_SLIDER_Spirals_Rotation=40
-// Smooth sine-faded colour bands scrolling along the strand over time
-function _fxSpirals(col, idx, n, el, dur) {
-  const pn    = n > 1 ? idx / (n - 1) : 0.5;
-  const bands = 3;
-  const speed = el / dur;                              // 0→1 over duration
-  const phase = (pn * bands - speed * 2 + 1000) % 1;  // normalised 0→1
-  const k     = 0.5 + 0.5 * Math.sin(phase * Math.PI * 2);
-  return _sc(_rgb3(col), k);
-}
-
-// Butterfly — interfering diagonal sine lobes with a hue that rotates over time
-// (xLights Butterfly is colorful/rainbow by default). Canvas-only approximation.
-function _fxButterfly(col, nx, ny, el) {
-  const v = Math.sin((nx*3 + ny*3 + el*1.5) * Math.PI) *
-            Math.sin((nx*3 - ny*3 + el)     * Math.PI);
-  const k = 0.5 + 0.5 * v;                                  // 0→1
-  return _hsv3(((nx*180 + ny*180 + el*40) % 360 + 360) % 360, 1, k);
-}
-
-// Plasma — classic multi-sine plasma field tinted toward the effect color
-function _fxPlasma(col, nx, ny, el) {
-  const p = Math.sin(nx*6 + el*2) + Math.sin(ny*6 - el*1.3) +
-            Math.sin((nx+ny)*4 + el) + Math.sin(Math.hypot(nx-0.5, ny-0.5)*10 - el*2);
-  const k = Math.max(0, Math.min(1, 0.5 + 0.22 * p));       // ~0→1
-  const [r,g,b] = _rgb3(col);
-  return [~~(k*r*0.4 + k*255*0.6), ~~(k*g*0.4 + (1-k)*120), ~~(k*b*0.6 + k*160)];
-}
-
-// Fireworks — a few timed radial bursts that expand and fade. Deterministic
-// pseudo-random centers (no Math.random — keeps the preview stable/replayable).
-function _fxFireworks(col, idx, n, nx, ny, el) {
-  const [r0,g0,b0] = _rgb3(col);
-  let bri = 0;
-  for (let i = 0; i < 4; i++) {
-    const cx = ((Math.sin(i*91.3)*4375)%1+1)%1;
-    const cy = ((Math.sin(i*57.7)*9187)%1+1)%1;
-    const t  = ((el*0.6 + i*0.25) % 1);                      // 0→1 burst life
-    const radius = t * 0.5;
-    const d = Math.abs(Math.hypot(nx-cx, ny-cy) - radius);
-    if (d < 0.06) bri = Math.max(bri, (1 - d/0.06) * (1 - t)); // ring, fading with age
-  }
-  return [~~(r0*bri), ~~(g0*bri), ~~(b0*bri)];
-}
-
-// Marquee — theatre-chase bands of lit pixels scrolling along the strand
-function _fxMarquee(col, idx, n, el) {
-  const band = 3, gap = 3, period = band + gap;
-  const shift = Math.floor(el * 10);                         // Marquee_Speed≈10 → 10 steps/sec
-  const lit = ((((idx + shift) % period) + period) % period) < band;
-  return lit ? _rgb3(col) : [0,0,0];
-}
-
 // Master dispatcher — returns [r,g,b] for one pixel
-function stagePixelColor(eff, idx, n, el, dur, nx, ny) {
-  const rgb = _effectBaseColor(eff, idx, n, el, dur, nx, ny);
-  // Same as xLights' renderer (PixelBuffer, contrast 0): scale each channel by
-  // brightness/100 and cap at 255, so >100% clips mixed colours toward white.
+function stagePixelColor(eff, idx, n, el, dur, nx, ny, buf) {
+  // buf (optional) = this pixel's place in the effect's xLights render buffer:
+  // {x, y, w, h}, y from the bottom. Without one, the pixel is node idx of a strip.
+  let rgb = _effectBaseColor(eff, idx, n, el, dur, buf);
+  // Same order as xLights' mixer: brightness (scale each channel, cap at 255, so
+  // >100% clips mixed colours toward white), then the transition fade on value.
   const b = effBrightness(eff);
-  if (b === 100) return rgb;
-  const k = b / 100;
-  return [Math.min(255, Math.floor(rgb[0] * k)), Math.min(255, Math.floor(rgb[1] * k)), Math.min(255, Math.floor(rgb[2] * k))];
+  if (b !== 100) { const k = b / 100; rgb = rgb.map(ch => Math.min(255, Math.floor(ch * k))); }
+  const fade = xlFadeFactor(eff, el, dur);
+  if (fade < 1) { const hsv = _rgbToHsv(rgb); rgb = _xlHsv(hsv[0], hsv[1], hsv[2] * fade); }
+  return rgb;
 }
 
-function _effectBaseColor(eff, idx, n, el, dur, nx, ny) {
-  switch (eff.type) {
-    case 'On':         return _fxOn(eff.color);
-    case 'Chase':      return _fxChase(eff.color, idx, n, el, dur);
-    case 'Color Wash': return _fxColorWash(eff.color, el, dur, nx);
-    case 'Twinkle':    return _fxTwinkle(eff.color, idx, el);
-    case 'Pulse':      return _fxPulse(eff.color, el, dur);
-    case 'Fire':       return _fxFire(idx, el, ny);
-    case 'Rainbow':    return _fxRainbow(idx, n, el);
-    case 'Snowflakes': return _fxSnowflakes(idx, n, el, nx, ny);
-    case 'Shimmer':    return _fxShimmer(eff.color, el);
-    case 'Strobe':     return _fxStrobe(eff.color, el);
-    case 'Bars':       return _fxBars(eff.color, el, dur, ny);
-    case 'Meteors':    return _fxMeteors(eff.color, idx, n, el, nx, ny);
-    case 'Spirals':    return _fxSpirals(eff.color, idx, n, el, dur);
-    case 'Butterfly':  return _fxButterfly(eff.color, nx, ny, el);
-    case 'Plasma':     return _fxPlasma(eff.color, nx, ny, el);
-    case 'Fireworks':  return _fxFireworks(eff.color, idx, n, nx, ny, el);
-    case 'Marquee':    return _fxMarquee(eff.color, idx, n, el);
-    default:           return _rgb3(eff.color);
-  }
+function _effectBaseColor(eff, idx, n, el, dur, buf) {
+  const b = buf || { x: idx, y: 0, w: n, h: 1 };
+  const cells = xlEffectCells(eff, b.w, b.h, el, dur);
+  if (cells) return cells[b.y * b.w + b.x] || [0, 0, 0];
+  if (eff.type === 'Rainbow') return _fxRainbow(idx, n, el);
+  return _rgb3(eff.color || '#ffffff');
 }
 
 // Shared render path — works for the inline panel canvas and any popup canvas
@@ -5941,13 +6766,22 @@ function drawStageOnCanvas(canvas) {
     if (!grp) return;
     const members = grp.members.map(m => S.props.findIndex(p => p.name === m && !p.isGroup)).filter(i => i >= 0);
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0;
+    const gx = [], gy = [];
     members.forEach(mi => propStageGeometry(S.props[mi], w, h).points.forEach(pt => {
       if (pt.cx < x0) x0 = pt.cx; if (pt.cx > x1) x1 = pt.cx;
       if (pt.cy < y0) y0 = pt.cy; if (pt.cy > y1) y1 = pt.cy;
+      gx.push(pt.cx); gy.push(-pt.cy);
       n++;
     }));
     if (!n) return;
     const g = { eff: geff, x0, y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), n };
+    // The group's render buffer: a minimal grid over all member dots, like the
+    // layout's minimalGrid group buffer. Looked up by canvas position, so a member's
+    // drops (which sit on the member's own dots) find their cells too.
+    const gbuf = _minimalGrid(gx, gy), gIndex = new Map();
+    gx.forEach((x, k) => gIndex.set(Math.round(x * 4) + ',' + Math.round(-gy[k] * 4), gbuf[k]));
+    g.bufAt = (cx, cy) => gIndex.get(Math.round(cx * 4) + ',' + Math.round(cy * 4))
+      || { x: Math.round((cx - x0) / g.w * ((gbuf[0]?.w || 1) - 1)), y: 0, w: gbuf[0]?.w || 1, h: gbuf[0]?.h || 1 };
     const memberNames = new Set(members.map(mi => S.props[mi].name));
     S.props.forEach((p, pi) => {
       if (memberNames.has(p.name) || (p.isSub && memberNames.has(p.parentName)))
@@ -6016,7 +6850,8 @@ function propStageGeometry(prop, cw, ch) {
 
   // ── No model: single dot ──────────────────────────────────────────────────
   if (!prop.model) {
-    return { kind: 'dot', dotR: 10 * sc, points: [{ cx: px, cy: py, idx: 0, n: 1, nx: 0.5, ny: 0.5 }] };
+    return { kind: 'dot', dotR: 10 * sc,
+             points: [{ cx: px, cy: py, idx: 0, n: 1, nx: 0.5, ny: 0.5, buf: { x: 0, y: 0, w: 1, h: 1 } }] };
   }
 
   // ── Worldspace pixel model (Arches, Single Line, Icicles) ─────────────────
@@ -6037,7 +6872,17 @@ function propStageGeometry(prop, cw, ch) {
     }
     const { x0, y0, rx, ry } = prop.model._bbox;
 
+    // Render-buffer position per node: a single line is a 1×n strip in xLights;
+    // other worldspace models get a minimal grid of their occupied columns/rows.
+    if (!prop.model._buf) {
+      prop.model._buf = prop.model.bufferKind === 'line'
+        ? worldPixels.map((_, i) => ({ x: i, y: 0, w: n, h: 1 }))
+        : _minimalGrid(worldPixels.map(p => p.wx), worldPixels.map(p => p.wy));
+    }
+    const bufs = prop.model._buf;
+
     const points = worldPixels.map((p, idx) => ({
+      buf: bufs[idx],
       cx: (p.wx / pw) * cw,
       cy: (1 - p.wy / ph) * ch,              // Y-flip: xLights Y=0 is bottom
       idx, n,
@@ -6069,6 +6914,7 @@ function propStageGeometry(prop, cw, ch) {
   pixelCoords.forEach(p => {
     if (!p) return;
     points.push({
+      buf: { x: p.col, y: gridH - 1 - p.row, w: gridW, h: gridH },   // custom model buffer = its grid
       cx: ox + (p.col + 0.5) * cellW,
       cy: oy + (p.row + 0.5) * cellH,
       idx: points.length, n,
@@ -6080,27 +6926,40 @@ function propStageGeometry(prop, cw, ch) {
            focus: { x: ox - 2, y: oy - 2, w: gridW * cellW + 4, h: gridH * cellH + 4 } };
 }
 
+// An effect's elapsed time and duration at track time t, counted in whole frames
+// the way xLights renders: progress = (frame - firstFrame) / (lastFrame - firstFrame).
+// The stage then steps at the sequence's real playback rate, so a pattern too fast
+// for the frame rate looks the same here as on the lights.
+function effectClock(eff, t) {
+  const fms = S.frameMs || 50;
+  // RenderBuffer::SetEffectDuration: first = start/frame, last = (end-1)/frame
+  const first = Math.floor(Math.round(eff.startTime * 1000) / fms);
+  const last  = Math.max(first, Math.floor((Math.round(eff.endTime * 1000) - 1) / fms));
+  const cur   = Math.min(last, Math.max(first, Math.floor(t * 1000 / fms + 1e-6)));
+  return { el: (cur - first) * fms / 1000, dur: (last - first) * fms / 1000 };
+}
+
 function drawStageProp(ctx, prop, eff, t, focused, cw, ch, groupFx) {
   // eff     = the prop's own effect at time t (or null/undefined)
   // groupFx = active effects on groups this prop belongs to; each renders across
   //           the whole group as one canvas: {eff, x0, y0, w, h, n} in canvas px
   // cw/ch   = target canvas dimensions (for worldspace coord mapping)
   const geo = propStageGeometry(prop, cw, ch);
-  const elapsed  = eff ? Math.max(0, t - eff.startTime) : 0;
-  const duration = eff ? Math.max(0.001, eff.endTime - eff.startTime) : 1;
+  const clk = eff ? effectClock(eff, t) : { el: 0, dur: 1 };
+  const elapsed = clk.el, duration = clk.dur;
   const lit = !!eff || !!(groupFx && groupFx.length);
 
   // A dot's colour: its own effect, lightened by any group effect over it. Model
   // and group effects both light the same channels in xLights; taking the
   // brighter of each channel approximates that layering.
   function pixelFill(pt) {
-    let rgb = eff ? stagePixelColor(eff, pt.idx, pt.n, elapsed, duration, pt.nx, pt.ny) : null;
+    let rgb = eff ? stagePixelColor(eff, pt.idx, pt.n, elapsed, duration, pt.nx, pt.ny, pt.buf) : null;
     (groupFx || []).forEach(g => {
       const gnx = Math.min(1, Math.max(0, (pt.cx - g.x0) / g.w));
       const gny = Math.min(1, Math.max(0, (pt.cy - g.y0) / g.h));
       const gidx = Math.round(gnx * (g.n - 1));   // group buffer runs left to right
-      const c = stagePixelColor(g.eff, gidx, g.n, Math.max(0, t - g.eff.startTime),
-                                Math.max(0.001, g.eff.endTime - g.eff.startTime), gnx, gny);
+      const gc = effectClock(g.eff, t);
+      const c = stagePixelColor(g.eff, gidx, g.n, gc.el, gc.dur, gnx, gny, g.bufAt(pt.cx, pt.cy));
       rgb = rgb ? [Math.max(rgb[0], c[0]), Math.max(rgb[1], c[1]), Math.max(rgb[2], c[2])] : c;
     });
     if (!rgb) return hexAlpha(prop.color, 0.35);
