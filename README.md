@@ -19,8 +19,9 @@ PixelConductor is a Flask server (`app.py`) plus a single-file web app
   - kick/snare and cymbals, from a harmonic/percussive split of the drums
   - bells, choir and strings, from a second demucs pass on the "other" stem
   - sub-bass, from a low-pass of the full mix
-- **Timeline editor.** Snap to beat, multi-select, copy and paste, undo and redo, effects
-  on whole models or on submodels, and model groups as collapsible track headers.
+- **Timeline editor.** Snap to beat, multi-select, copy and paste, undo and redo, and
+  effects on whole models, submodels or model groups. A group effect renders across all
+  its members as one canvas, as it does in xLights.
 - **Live stage preview.** Your actual xLights layout drawn over its background image,
   animating whatever is under the playhead. It can pop out into its own window.
 - **17 effects with an xLights property editor.** Each effect type has curated controls
@@ -104,9 +105,10 @@ The launcher writes server output to `logs/server.log`.
 2. Wait for the first analysis. Stem separation takes a few minutes per song on a GPU,
    and the results are cached, so later loads are instant. **Re-analyze** clears the
    cache and starts over.
-3. Choose an effect and color in the **Effects** panel, then drag on a model's track to
-   place it. Double-click an effect to change its type, timing, color and xLights
-   properties.
+3. Choose a color in the **Effects** panel, then drag an effect from the panel onto a
+   track. Dropping on a group's header row creates one effect on the whole group; hold
+   **Alt** while dropping to put a separate copy on each member instead. Double-click an
+   effect to change its type, timing, color, brightness and xLights properties.
 4. Press **Save** (Ctrl+S) to write the `.xsq` back in place, or **Export .xsq** to
    download a copy.
 5. Open the sequence in xLights and render it before playing the show. The `.fseq`
@@ -141,6 +143,12 @@ PixelConductor effect names map to xLights effects as follows:
 
 Because Chase and Rainbow share one xLights effect, as do On and Pulse, PixelConductor
 tells them apart by their settings when it imports a sequence.
+
+**Brightness** (0–400%, default 100%) is set per effect in the Edit Effect dialog.
+xLights stores it in the effect's color palette, not its settings, and multiplies each
+red, green and blue channel by it, capping at 255. Above 100%, mixed colors clip toward
+white or toward a primary (gold at 400% plays as yellow), so 100% shows the color as
+picked. The stage preview applies brightness the same way.
 
 The stage and palette previews are PixelConductor's own approximations of each effect.
 The rendered look in xLights is what plays on your lights.
