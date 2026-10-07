@@ -152,8 +152,18 @@ red, green and blue channel by it, capping at 255. Above 100%, mixed colors clip
 white or toward a primary (gold at 400% plays as yellow), so 100% shows the color as
 picked. The stage preview applies brightness the same way.
 
-The stage and palette previews are PixelConductor's own approximations of each effect.
-The rendered look in xLights is what plays on your lights.
+The stage preview renders each effect with a port of xLights' own render code, driven by
+the effect's settings, on the same render buffer xLights uses (a string is a 1×n strip,
+a custom model its grid, a group a minimal grid of its members). It steps at the
+sequence's frame timing, so a pattern too fast for the frame rate looks the same here as
+on the lights. Effects that build on earlier frames (Strobe, Twinkle, Fire, Snowflakes,
+Meteors, Fireworks) are simulated from their start. Their random draws come from a
+seeded generator, so the preview is stable but not pixel-identical to xLights.
+
+Not ported yet: SingleStrand FX modes other than Rainbow and Colorloop, Bars' custom
+directions, Twinkle's "New Render Method", value curves, music-reactive options, and
+palettes with more than one color (PixelConductor effects carry one). Rendering in xLights
+remains the final word on what plays.
 
 ## Layout support
 
