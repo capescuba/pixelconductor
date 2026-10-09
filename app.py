@@ -415,7 +415,8 @@ def show_layout():
     groups = []
     for g in root.findall('.//modelGroups/modelGroup'):
         members = [x.strip() for x in g.get('models', '').split(',') if x.strip()]
-        groups.append({"name": g.get('name', ''), "members": members})
+        groups.append({"name": g.get('name', ''), "members": members,
+                       "layout": g.get('layout', '')})
 
     return jsonify({
         "backgroundImage":      bg_image,

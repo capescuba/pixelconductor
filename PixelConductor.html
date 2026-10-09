@@ -1146,8 +1146,13 @@ function buildTrackLayout() {
     // xLights lets a model belong to several groups, so a prop is listed under
     // every group that contains it; its effects show on each copy of its row.
     grp.members.forEach(mname => {
-      const pi = S.props.findIndex(p => p.name === mname && !p.isGroup);
+      const pi = memberPropIdx(mname);
       if (pi < 0) return;
+      // A nested group shows as its own effect row (its pseudo-prop) under the header.
+      if (S.props[pi].isGroup) {
+        if (!grp.collapsed) layout.push({ type: 'prop', propIdx: pi, groupIdx: gi, name: mname, isNestedGroup: true });
+        return;
+      }
       assigned.add(pi);  // grouped props aren't repeated in the ungrouped tail
       if (!grp.collapsed) pushProp(pi, gi, mname);
     });
@@ -1159,6 +1164,30 @@ function buildTrackLayout() {
   });
 
   S.trackLayout = layout;
+}
+
+// The prop a group member name stands for: a nested group's pseudo-prop, or the
+// model / submodel prop. -1 if it isn't loaded.
+function memberPropIdx(mname) {
+  const isGrp = S.groups.some(g => g.name === mname);
+  return S.props.findIndex(p => p.name === mname && !!p.isGroup === isGrp);
+}
+
+// Every model / submodel prop a group lights, nested groups flattened (like
+// xLights' GetFlatModels). `seen` guards against a group that contains itself.
+function groupLeafProps(grp, seen = new Set()) {
+  if (!grp || seen.has(grp.name)) return [];
+  seen.add(grp.name);
+  const out = [];
+  grp.members.forEach(m => {
+    const sub = S.groups.find(g => g.name === m);
+    if (sub) out.push(...groupLeafProps(sub, seen));
+    else {
+      const pi = S.props.findIndex(p => p.name === m && !p.isGroup);
+      if (pi >= 0) out.push(pi);
+    }
+  });
+  return [...new Set(out)];
 }
 
 // Row index for a given propIdx (-1 if hidden inside a collapsed group)
@@ -1196,7 +1225,7 @@ function paletteDropProps(ri, alt) {
   if (!row) return [];
   if (row.type === 'group' && (alt || !isEffectRow(row)))
     return S.groups[row.groupIdx].members
-      .map(m => S.props.findIndex(p => p.name === m && !p.isGroup))
+      .map(memberPropIdx)
       .filter(pi => pi >= 0);
   return isEffectRow(row) ? [row.propIdx] : [];
 }
@@ -1236,7 +1265,7 @@ function buildTrackLabels() {
       const label = isSub ? ('↳ ' + p.subName) : p.name;
       const toggle = row.hasSubs
         ? `<span class="sub-toggle" style="cursor:pointer;display:inline-block;width:11px;margin-right:1px;opacity:.55">${row.subCollapsed ? '▶' : '▼'}</span>`
-        : '';
+        : row.isNestedGroup ? '<span style="font-size:10px;opacity:.55" title="Group">▣</span>' : '';
       d.innerHTML = `${toggle}<div class="t-dot" style="background:${p.color}"></div>
                      <div class="t-name">${label}</div>
                      <div class="t-ch">${p.ch}ch</div>`;
@@ -1250,7 +1279,7 @@ function buildTrackLabels() {
           drawTimeline();
         };
       }
-      if (!isSub) {
+      if (!isSub && !row.isNestedGroup) {
         d.ondblclick   = () => renameProp(row.propIdx);
         d.oncontextmenu = ev => { ev.preventDefault(); loadXModelForProp(row.propIdx); };
       }
@@ -2792,7 +2821,7 @@ function drawTimeline() {
     const x2 = Math.max(d.startX, d.curX) - sx;
     const grp = S.groups[d.groupIdx];
     grp.members.forEach(mname => {
-      const pi  = S.props.findIndex(p => p.name === mname);
+      const pi  = memberPropIdx(mname);
       const mri = trackRowOf(pi);
       if (mri < 0) return;
       const y = mri * TRACK_H;
@@ -3199,7 +3228,7 @@ function onTLMouseUp(e) {
     if (t2 - t1 > 0.05) {
       const grp = S.groups[d.groupIdx];
       grp.members.forEach(mname => {
-        const pi = S.props.findIndex(p => p.name === mname);
+        const pi = memberPropIdx(mname);
         if (pi >= 0)
           S.effects.push({ id: S.nextId++, propIdx: pi,
             startTime: t1, endTime: t2, type: S.activeEffect, color: S.activeColor, brightness: 100, xlSettings: null });
@@ -5460,7 +5489,8 @@ async function loadShowLayout() {
     // Populate groups from layout; filter group names out of S.props.
     // Groups open collapsed unless the user left them expanded last time.
     S.groups = (layout.groups || []).map(g => ({
-      name: g.name, members: g.members, collapsed: savedCollapse('groups', g.name) ?? true
+      name: g.name, members: g.members, layout: g.layout || '',
+      collapsed: savedCollapse('groups', g.name) ?? true
     }));
     const groupNames = new Set(S.groups.map(g => g.name));
 
@@ -5573,8 +5603,7 @@ async function loadShowLayout() {
     S.props.forEach(p => {
       if (!p.isGroup) return;
       const grp = S.groups.find(g => g.name === p.name);
-      p.ch = (grp ? grp.members : []).reduce((sum, m) =>
-        sum + ((S.props.find(q => q.name === m && !q.isGroup) || {}).ch || 0), 0);
+      p.ch = groupLeafProps(grp).reduce((sum, pi) => sum + (S.props[pi].ch || 0), 0);
     });
     applyLayoutPositions();     // set stageX/stageY from world coords
 
@@ -6889,16 +6918,16 @@ function drawStageOnCanvas(canvas) {
     }
   });
 
-  // An effect on a group renders across all its members as ONE canvas, like
-  // xLights: size it to the bounding box of every member dot, then hand it to
-  // each member (and the member's drops) to draw.
+  // An effect on a group renders across all its members (nested groups
+  // flattened) as ONE canvas, like xLights: size it to the bounding box of every
+  // member dot, then hand it to each member (and the member's drops) to draw.
   const groupFxOf = new Map();   // propIdx → [{eff, x0, y0, w, h, n}]
   S.props.forEach((gp, gi) => {
     if (!gp.isGroup) return;
     const geff = S.effects.find(e => e.propIdx === gi && t >= e.startTime && t < e.endTime);
     const grp  = geff && S.groups.find(g => g.name === gp.name);
     if (!grp) return;
-    const members = grp.members.map(m => S.props.findIndex(p => p.name === m && !p.isGroup)).filter(i => i >= 0);
+    const members = groupLeafProps(grp);
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, n = 0;
     const gx = [], gy = [];
     members.forEach(mi => propStageGeometry(S.props[mi], w, h).points.forEach(pt => {
@@ -6909,13 +6938,21 @@ function drawStageOnCanvas(canvas) {
     }));
     if (!n) return;
     const g = { eff: geff, x0, y0, w: Math.max(1, x1 - x0), h: Math.max(1, y1 - y0), n };
-    // The group's render buffer: a minimal grid over all member dots, like the
-    // layout's minimalGrid group buffer. Looked up by canvas position, so a member's
-    // drops (which sit on the member's own dots) find their cells too.
-    const gbuf = _minimalGrid(gx, gy), gIndex = new Map();
-    gx.forEach((x, k) => gIndex.set(Math.round(x * 4) + ',' + Math.round(-gy[k] * 4), gbuf[k]));
-    g.bufAt = (cx, cy) => gIndex.get(Math.round(cx * 4) + ',' + Math.round(cy * 4))
-      || { x: Math.round((cx - x0) / g.w * ((gbuf[0]?.w || 1) - 1)), y: 0, w: gbuf[0]?.w || 1, h: gbuf[0]?.h || 1 };
+    // The group's render buffer: the layout's Per Model buffer when it has one,
+    // else a minimal grid over all member dots (the minimalGrid group buffer).
+    // Looked up by canvas position, so a member's drops (which sit on the
+    // member's own dots) find their cells too.
+    let gIndex = new Map(), bw = 1, bh = 1;
+    const perModel = _perModelBuffer(grp, w, h);
+    if (perModel) {
+      ({ cells: gIndex, w: bw, h: bh } = perModel);
+    } else {
+      const gbuf = _minimalGrid(gx, gy);
+      gx.forEach((x, k) => gIndex.set(_stageKey(x, -gy[k]), gbuf[k]));
+      bw = gbuf[0]?.w || 1; bh = gbuf[0]?.h || 1;
+    }
+    g.bufAt = (cx, cy) => gIndex.get(_stageKey(cx, cy))
+      || { x: Math.round((cx - x0) / g.w * (bw - 1)), y: 0, w: bw, h: bh };
     const memberNames = new Set(members.map(mi => S.props[mi].name));
     S.props.forEach((p, pi) => {
       if (memberNames.has(p.name) || (p.isSub && memberNames.has(p.parentName)))
@@ -6930,6 +6967,30 @@ function drawStageOnCanvas(canvas) {
     if (activeOnly && !eff && !gfx) return;   // not lit at the current time → hidden
     drawStageProp(ctx, prop, eff, t, i === S.stageFocusProp, w, h, gfx);
   });
+}
+
+// Canvas position → lookup key for a group's buffer cells (quarter-pixel grid).
+function _stageKey(cx, cy) { return Math.round(cx * 4) + ',' + Math.round(cy * 4); }
+
+// xLights' "Horizontal Per Model" / "Vertical Per Model" group buffer: each
+// DIRECT member (a nested group counts as one) is one column / row, its nodes
+// laid along it in wire order. Returns {cells: canvas key → cell, w, h}, or null
+// for any other buffer style.
+function _perModelBuffer(grp, cw, ch) {
+  const horiz = grp.layout === 'Horizontal Per Model';
+  if (!horiz && grp.layout !== 'Vertical Per Model') return null;
+  const lines = grp.members.map(m => {
+    const sub = S.groups.find(g => g.name === m);
+    const pis = sub ? groupLeafProps(sub) : [memberPropIdx(m)].filter(pi => pi >= 0);
+    return pis.flatMap(pi => propStageGeometry(S.props[pi], cw, ch).points);
+  }).filter(pts => pts.length);
+  if (!lines.length) return null;
+  const len = Math.max(...lines.map(pts => pts.length));
+  const w = horiz ? lines.length : len, h = horiz ? len : lines.length;
+  const cells = new Map();
+  lines.forEach((pts, k) => pts.forEach((pt, j) =>
+    cells.set(_stageKey(pt.cx, pt.cy), horiz ? { x: k, y: j, w, h } : { x: j, y: k, w, h })));
+  return { cells, w, h };
 }
 
 // Shared stage-control setters — keep the inline controls and the pop-out in sync.
