@@ -1121,11 +1121,13 @@ function buildTrackLayout() {
     if (par >= 0) (subsOf[par] = subsOf[par] || []).push(pi);
   });
   // Push a prop row; if it has submodels, add them below unless collapsed.
-  // Submodels default to collapsed (subCollapsed !== false) to cut timeline noise.
+  // Submodels default to collapsed (subCollapsed !== false) to cut timeline noise;
+  // a model the user opened in an earlier session reopens that way.
   function pushProp(pi, gi, name) {
     const subs = subsOf[pi] || [];
     const hasSubs = subs.length > 0;
-    const collapsed = hasSubs && (S.props[pi].subCollapsed !== false);
+    const sc = S.props[pi].subCollapsed ?? savedCollapse('subs', S.props[pi].name);
+    const collapsed = hasSubs && sc !== false;
     layout.push({ type: 'prop', propIdx: pi, groupIdx: gi, name, hasSubs, subCollapsed: collapsed });
     if (hasSubs && !collapsed) {
       subs.forEach(si => {
@@ -1217,6 +1219,7 @@ function buildTrackLabels() {
       d.querySelector('.grp-toggle').onclick = ev => {
         ev.stopPropagation();
         grp.collapsed = !grp.collapsed;
+        rememberCollapse('groups', grp.name, grp.collapsed);
         buildTrackLabels();
         resizeTimelineCanvas();
         drawTimeline();
@@ -1238,6 +1241,7 @@ function buildTrackLabels() {
         d.querySelector('.sub-toggle').onclick = ev => {
           ev.stopPropagation();
           p.subCollapsed = !row.subCollapsed;   // toggle from current effective state
+          rememberCollapse('subs', p.name, p.subCollapsed);
           buildTrackLabels();
           resizeTimelineCanvas();
           drawTimeline();
@@ -4663,6 +4667,33 @@ function loadKeys() {
   try { const k = JSON.parse(localStorage.getItem('pc_keys')); if (k) S.keys = k; } catch(e){}
 }
 
+// ── Remembered row collapse state ────────────────────────────────────────────
+// Which groups / submodel lists the user left open or closed, by name, so the
+// timeline comes back the same way in the next session and the next sequence.
+// { groups: {name: collapsed}, subs: {modelName: collapsed} }
+let _rowCollapse = null;
+
+function _loadRowCollapse() {
+  if (_rowCollapse) return _rowCollapse;
+  _rowCollapse = { groups: {}, subs: {} };
+  try {
+    const r = JSON.parse(localStorage.getItem('pc_row_collapse'));
+    if (r && typeof r === 'object') Object.assign(_rowCollapse, r);
+  } catch (e) {}
+  return _rowCollapse;
+}
+
+// Saved state for a row, or undefined if the user never toggled it.
+function savedCollapse(kind, name) {
+  return _loadRowCollapse()[kind]?.[name];
+}
+
+function rememberCollapse(kind, name, collapsed) {
+  const rc = _loadRowCollapse();
+  (rc[kind] = rc[kind] || {})[name] = !!collapsed;
+  try { localStorage.setItem('pc_row_collapse', JSON.stringify(rc)); } catch (e) {}
+}
+
 // ═══════════════════════════════════════════════════════════════
 //  COLOR
 // ═══════════════════════════════════════════════════════════════
@@ -5423,9 +5454,10 @@ async function loadShowLayout() {
       const s = document.getElementById('stage-bg-fade'); if (s) s.value = Math.round(S.stageBgFade * 100);
     }
 
-    // Populate groups from layout; filter group names out of S.props
+    // Populate groups from layout; filter group names out of S.props.
+    // Groups open collapsed unless the user left them expanded last time.
     S.groups = (layout.groups || []).map(g => ({
-      name: g.name, members: g.members, collapsed: false
+      name: g.name, members: g.members, collapsed: savedCollapse('groups', g.name) ?? true
     }));
     const groupNames = new Set(S.groups.map(g => g.name));
 
