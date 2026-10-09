@@ -291,8 +291,8 @@ input[type=range]{accent-color:var(--accent)}
 .ebar-peak{position:absolute;top:-2px;bottom:-2px;width:2px;left:0%;border-radius:1px;opacity:.85;transition:left .05s}
 
 /* ── UNIFIED RIGHT SIDEBAR ── */
-#sidebar-resize-handle{width:5px;height:auto;align-self:stretch;background:var(--border);cursor:col-resize;flex-shrink:0;position:relative;z-index:10;transition:background .1s}
-#sidebar-resize-handle:hover,#sidebar-resize-handle.dragging{background:var(--accent)}
+#sidebar-resize-handle,#labels-resize-handle{width:5px;height:auto;align-self:stretch;background:var(--border);cursor:col-resize;flex-shrink:0;position:relative;z-index:10;transition:background .1s}
+#sidebar-resize-handle:hover,#sidebar-resize-handle.dragging,#labels-resize-handle:hover,#labels-resize-handle.dragging{background:var(--accent)}
 #right-sidebar{flex-shrink:0;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--border);align-self:stretch;overflow:hidden}
 #right-sidebar.hidden{display:none!important}
 #sidebar-tabs{height:36px;background:var(--panel2);border-bottom:1px solid var(--border);display:flex;align-items:stretch;flex-shrink:0}
@@ -467,6 +467,9 @@ input[type=range]{accent-color:var(--accent)}
     <div id="track-labels"></div>
     <div class="add-track-lbl" onclick="addProp()">+ Add prop</div>
   </div>
+
+  <!-- LABELS RESIZE HANDLE (drag to widen the track names; double-click to fit) -->
+  <div id="labels-resize-handle" title="Drag to resize · double-click to fit names"></div>
 
   <div id="timeline-section">
   <div id="right-panel">
@@ -7440,6 +7443,68 @@ function togglePropPreview() { showSidebarTab('props'); }
     getHandle().classList.remove('dragging');
     document.body.style.cursor = '';
     document.body.style.userSelect = '';
+  });
+})();
+
+// ── Labels (left panel) resize handle ─────────────────────────
+// Width lives in --LABEL-W and is remembered across sessions.
+const LABEL_W_MIN = 120;
+
+function setLabelWidth(w, persist) {
+  w = Math.round(Math.max(LABEL_W_MIN, Math.min(window.innerWidth * 0.5, w)));
+  document.documentElement.style.setProperty('--LABEL-W', w + 'px');
+  refitViewportWidth();
+  if (persist) { try { localStorage.setItem('pc_label_w', String(w)); } catch (e) {} }
+  return w;
+}
+
+// Widest width at which every track name shows in full.
+function fitLabelWidth() {
+  const lp = document.getElementById('left-panel');
+  let need = LABEL_W_MIN;
+  document.querySelectorAll('#track-labels .track-lbl').forEach(lbl => {
+    const name = lbl.querySelector('.t-name');
+    if (name) need = Math.max(need, lp.offsetWidth - name.clientWidth + name.scrollWidth + 2);
+  });
+  setLabelWidth(need, true);
+}
+
+(function() {
+  let dragging = false, startX = 0, startW = 0, lastW = 0;
+  const getHandle = () => document.getElementById('labels-resize-handle');
+
+  try {
+    const saved = parseInt(localStorage.getItem('pc_label_w'), 10);
+    if (saved > 0) document.documentElement.style.setProperty('--LABEL-W', saved + 'px');
+  } catch (e) {}
+
+  document.addEventListener('mousedown', e => {
+    if (e.target !== getHandle()) return;
+    e.preventDefault();
+    dragging = true;
+    startX = e.clientX;
+    startW = lastW = document.getElementById('left-panel').offsetWidth;
+    getHandle().classList.add('dragging');
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  });
+
+  document.addEventListener('mousemove', e => {
+    if (!dragging) return;
+    lastW = setLabelWidth(startW + e.clientX - startX, false);
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    getHandle().classList.remove('dragging');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    setLabelWidth(lastW, true);
+  });
+
+  document.addEventListener('dblclick', e => {
+    if (e.target === getHandle()) fitLabelWidth();
   });
 })();
 
