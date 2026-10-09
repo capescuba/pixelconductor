@@ -3691,10 +3691,12 @@ function pasteEffects(explicitRow, explicitTime) {
     const modelRow = (modelRi >= 0) ? S.trackLayout[modelRi] : null;
     if (isEffectRow(modelRow)) {
       const mp = S.props[modelRow.propIdx];
-      if (c.subName != null) {
-        // drop effect → the target model's drop of the same name (even if collapsed)
-        if (mp && !mp.isSub && !mp.isGroup) pi = S.props.findIndex(p => p.isSub && p.name === mp.name + '/' + c.subName);
+      if (c.subName != null && mp && !mp.isSub && !mp.isGroup) {
+        // drop effect onto a whole model → that model's drop of the same name (even if
+        // collapsed), so copying one icicle's drops onto another keeps them per drop
+        pi = S.props.findIndex(p => p.isSub && p.name === mp.name + '/' + c.subName);
       } else {
+        // onto a drop row or a group header: paste where you point (Drop 1 → Drop 2)
         pi = modelRow.propIdx;
       }
     }
@@ -3704,7 +3706,7 @@ function pasteEffects(explicitRow, explicitTime) {
     S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
     newIds.push(id);
   });
-  if (!newIds.length) { flashStatus('Nothing to paste here: the copied effects are on drops this row does not have'); return; }
+  if (!newIds.length) { flashStatus('Nothing to paste here: this model has no drops matching the copied ones'); return; }
   commitUndo(_pasteUndo);
   S.selectedIds = new Set(newIds);
   S.selectedId  = newIds[newIds.length - 1];
