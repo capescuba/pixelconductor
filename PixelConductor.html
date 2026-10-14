@@ -940,7 +940,9 @@ function saveState() {
       syncop:           document.getElementById('f-syncop')?.value ?? '0',
       minEffLen:        document.getElementById('f-min-len')?.value ?? '0.25',
       maxEffLen:        document.getElementById('f-max-len')?.value ?? '4',
-      // props/groups/effects come from the XSQ — not persisted here
+      // props/groups/effects come from the XSQ — not persisted here. Only its path
+      // is, so the next start can reopen it (an imported file has no path: keep the last one).
+      lastXSQPath:      (S.xsqOpen && S.currentXSQPath) || _savedLastXSQPath(),
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
   } catch(e) { console.warn('saveState failed:', e); }
@@ -971,6 +973,24 @@ async function restoreState() {
     if (data.minEffLen  != null) { const el = document.getElementById('f-min-len');    if (el) el.value   = data.minEffLen; }
     if (data.maxEffLen  != null) { const el = document.getElementById('f-max-len');    if (el) el.value   = data.maxEffLen; }
   } catch(e) { console.warn('restoreState failed:', e); }
+}
+
+// Path of the sequence open at the end of the last session (null if none).
+function _savedLastXSQPath() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY))?.lastXSQPath || null; } catch (e) { return null; }
+}
+
+// On startup, reopen the sequence from last time. Quiet: a moved or deleted
+// file just leaves the app empty, as before.
+async function reopenLastSequence() {
+  const path = _savedLastXSQPath();
+  if (!path || S.xsqOpen) return;
+  try {
+    const res = await fetch('/api/xsq?path=' + encodeURIComponent(path), { method: 'HEAD' });
+    if (!res.ok) return;
+  } catch (e) { return; }
+  await loadXSQFromServer(path);
+  if (S.xsqOpen) flashStatus('Reopened ' + path.split(/[/\\]/).pop());
 }
 
 function clearSavedState() {
@@ -4265,9 +4285,10 @@ async function applyDraft(d, pathOverride) {
 }
 
 // On startup, list drafts left behind by a reload/crash/closed tab.
+// Offer to restore unsaved drafts. Resolves true if the prompt was shown.
 async function checkForDrafts() {
   const drafts = await fetchDrafts();
-  if (!drafts.length) return;
+  if (!drafts.length) return false;
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.id = 'drafts-modal';
@@ -4315,6 +4336,7 @@ async function checkForDrafts() {
   card.appendChild(actions);
   overlay.appendChild(card);
   document.body.appendChild(overlay);
+  return true;
 }
 
 function initSaveSafety() {
@@ -4325,7 +4347,8 @@ function initSaveSafety() {
     e.preventDefault();
     e.returnValue = '';
   });
-  checkForDrafts();
+  // Unsaved drafts get the restore prompt; otherwise pick up where we left off.
+  checkForDrafts().then(prompted => { if (!prompted) reopenLastSequence(); });
 }
 
 // Map our UI effect names → xLights internal effect names (used in name= attribute)
