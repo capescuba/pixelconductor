@@ -177,12 +177,18 @@ input[type=range]{accent-color:var(--accent)}
 
 /* ── MODALS ── */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;z-index:200}
-.modal{background:var(--panel);border:1px solid var(--border2);border-radius:10px;padding:22px 24px;min-width:360px;max-width:440px}
+.modal{background:var(--panel);border:1px solid var(--border2);border-radius:10px;padding:22px 24px;min-width:360px;max-width:440px;max-height:calc(100vh - 32px);overflow-y:auto}
 .modal h3{font-size:14px;font-weight:600;margin-bottom:16px;color:var(--text)}
 .modal-field{margin-bottom:13px}
 .modal-field label{display:block;font-size:11px;color:var(--text-dim);margin-bottom:4px}
 .modal-field input,.modal-field select{width:100%;padding:7px 10px;background:var(--bg);border:1px solid var(--border2);border-radius:5px;color:var(--text);font-size:13px}
 .modal-field input:focus,.modal-field select:focus{outline:none;border-color:var(--accent)}
+#eff-extra-colors{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.eff-extra{display:inline-flex;align-items:center;gap:2px}
+.modal-field .eff-extra input{width:38px;height:28px;padding:2px}
+.modal-field input.eff-color-target{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.eff-extra-x,.eff-extra-add{background:transparent;border:1px solid var(--border2);border-radius:4px;color:var(--text-dim);cursor:pointer;font-size:12px;line-height:1;padding:5px 7px}
+.eff-extra-x:hover,.eff-extra-add:hover{border-color:var(--accent);color:var(--accent)}
 .modal-field select option{background:var(--panel)}
 .modal-hint{font-size:11px;color:var(--text-dim);margin-top:3px}
 /* ── Per-effect property editor (inside Edit Effect modal) ── */
@@ -757,9 +763,14 @@ input[type=range]{accent-color:var(--accent)}
     </div>
     <div class="modal-field">
       <label>Color</label>
-      <input type="color" id="eff-color-input" onchange="pushRecentColor(this.value)">
+      <input type="color" id="eff-color-input" onchange="pushRecentColor(this.value)"
+             onclick="setEditTarget(0)" onfocus="setEditTarget(0)" title="Palette color 1 — click to select, then pick a swatch below">
       <div class="recent-row" id="eff-palette-colors" style="margin-top:8px"></div>
       <div class="recent-row" id="eff-recent-colors" style="margin-top:6px"></div>
+    </div>
+    <div class="modal-field">
+      <label>More palette colors <span style="font-weight:400;color:var(--text-dim);font-size:10px">xLights slots 2–8 · a Chase splits its band across them, color 1 leading · swatches fill the outlined color</span></label>
+      <div id="eff-extra-colors"></div>
     </div>
     <div class="modal-field">
       <label>Brightness <span id="eff-bri-val" style="font-weight:400;color:var(--text-dim)">100%</span></label>
@@ -1351,6 +1362,7 @@ const EFFECT_PARAM_SCHEMA = {
     { key:'E_CHECKBOX_ColorWash_HFade', label:'Horizontal Fade', type:'check', def:0 },
     { key:'E_CHECKBOX_ColorWash_VFade', label:'Vertical Fade', type:'check', def:0 },
     { key:'E_CHECKBOX_ColorWash_Shimmer', label:'Shimmer', type:'check', def:0 },
+    { key:'E_CHECKBOX_ColorWash_CircularPalette', label:'Circular Palette', type:'check', def:0 },
   ],
 
   'Twinkle': [
@@ -2893,9 +2905,13 @@ function _drawEffectAt(eff, sx, ri) {
   tlCtx.fillStyle = hexAlpha(eff.color, sel ? .55 : .38);
   tlCtx.fillRect(x, y, w, h);
 
-  // left accent bar
-  tlCtx.fillStyle = eff.color;
-  tlCtx.fillRect(x, y, 3, h);
+  // left accent bar — split into one band per palette colour
+  const cols = effColors(eff);
+  cols.forEach((c, k) => {
+    const y0 = y + Math.round(h * k / cols.length), y1 = y + Math.round(h * (k + 1) / cols.length);
+    tlCtx.fillStyle = c;
+    tlCtx.fillRect(x, y0, cols.length > 1 ? 4 : 3, y1 - y0);
+  });
 
   // border
   tlCtx.strokeStyle = sel ? '#fff' : hexAlpha(eff.color, .8);
@@ -3453,10 +3469,60 @@ function openEffectModal(eff) {
   document.getElementById('eff-modal-title').textContent = multi ? `Edit ${S._editIds.length} effects` : 'Edit Effect';
   document.getElementById('eff-delete-btn').textContent  = multi ? `Delete ${S._editIds.length}` : 'Delete';
   renderRecentColors();   // refresh the modal swatch row
+  S._editExtra = [...(eff.extraColors || [])];
+  S._editTarget = 0;
+  renderExtraColors();
   renderEffectProps(eff.type, eff.xlSettings || effectSettings(eff.type));
-  S._editInit = { color: eff.color.toLowerCase(), bri: effBrightness(eff), props: _readPropControls() };
+  S._editInit = { color: eff.color.toLowerCase(), extra: _extraKey(S._editExtra),
+                  bri: effBrightness(eff), props: _readPropControls() };
   _updateMultiEditHint();
   document.getElementById('effect-modal').classList.remove('hidden');
+}
+
+// ── Extra palette colours (slots 2-8) in the effect dialog ──────────────────
+// Edited in S._editExtra; Save copies a fresh array onto the effect (effects
+// share arrays after a shallow clone, so they're never mutated in place).
+function _extraKey(cols) { return (cols || []).map(c => c.toLowerCase()).join('+'); }
+
+// Which palette slot the dialog's swatches fill: 0 = the main colour, k+1 = extra k.
+function setEditTarget(t) {
+  S._editTarget = t;
+  document.getElementById('eff-color-input').classList.toggle('eff-color-target', t === 0);
+  document.querySelectorAll('#eff-extra-colors input[type=color]').forEach(inp =>
+    inp.classList.toggle('eff-color-target', +inp.dataset.k + 1 === t));
+}
+
+function renderExtraColors() {
+  const row = document.getElementById('eff-extra-colors');
+  const cols = S._editExtra || [];
+  row.innerHTML = cols.map((c, k) =>
+      `<span class="eff-extra"><input type="color" value="${c}" data-k="${k}" title="Palette color ${k + 2}">` +
+      `<button class="eff-extra-x" data-k="${k}" title="Remove color ${k + 2}">×</button></span>`).join('') +
+    (cols.length < PALETTE_SLOTS - 1 ? '<button class="eff-extra-add" title="Add a palette color">+ Color</button>' : '');
+  row.querySelectorAll('input[type=color]').forEach(inp => {
+    inp.onclick = inp.onfocus = () => setEditTarget(+inp.dataset.k + 1);
+    inp.onchange = () => {
+      S._editExtra = S._editExtra.map((c, k) => k === +inp.dataset.k ? inp.value : c);
+      pushRecentColor(inp.value);
+    };
+  });
+  row.querySelectorAll('.eff-extra-x').forEach(btn => btn.onclick = () => {
+    const k = +btn.dataset.k, t = S._editTarget || 0;
+    S._editExtra = S._editExtra.filter((_, i) => i !== k);
+    renderExtraColors();
+    // Removing the selected slot falls back to the main colour; later slots shift down.
+    setEditTarget(t === k + 1 ? 0 : t > k + 1 ? t - 1 : t);
+  });
+  const add = row.querySelector('.eff-extra-add');
+  if (add) add.onclick = () => {
+    // Start from a show colour the palette doesn't use yet.
+    const used = new Set([document.getElementById('eff-color-input').value, ...S._editExtra].map(c => c.toLowerCase()));
+    const next = SHOW_PALETTE.map(c => c.hex).find(c => !used.has(c.toLowerCase())) || '#ffffff';
+    S._editExtra = [...S._editExtra, next];
+    renderExtraColors();
+    setEditTarget(S._editExtra.length);   // swatches now fill the new colour
+  };
+  setEditTarget(S._editTarget || 0);      // keep the selection outline after a re-render
 }
 
 // Current value of each property control, keyed by settings key.
@@ -3506,6 +3572,7 @@ function saveEffectEdit() {
   eff.type      = newType;
   eff.xlSettings = collectEffectProps(base);   // edited params → verbatim export
   eff.color     = document.getElementById('eff-color-input').value;
+  eff.extraColors = S._editExtra?.length ? [...S._editExtra] : null;
   eff.brightness = parseInt(document.getElementById('eff-brightness').value, 10);
   eff.startTime = parseFloat(document.getElementById('eff-start').value);
   eff.endTime   = parseFloat(document.getElementById('eff-end').value);
@@ -3532,6 +3599,7 @@ function _saveMultiEffectEdit() {
   const color = document.getElementById('eff-color-input').value;
   const bri = parseInt(document.getElementById('eff-brightness').value, 10);
   const colorChanged = color.toLowerCase() !== init.color;
+  const extraChanged = _extraKey(S._editExtra) !== init.extra;
   const briChanged = bri !== init.bri;
   const typeSettings = typeChanged ? collectEffectProps(effectSettings(newType)) : null;
   const changedProps = typeChanged ? [] :
@@ -3548,6 +3616,7 @@ function _saveMultiEffectEdit() {
       e.xlSettings = serializeSettings(m);
     }
     if (colorChanged) e.color = color;
+    if (extraChanged) e.extraColors = S._editExtra.length ? [...S._editExtra] : null;
     if (briChanged) e.brightness = bri;
   });
   commitUndo(_u);
@@ -3562,7 +3631,7 @@ const UNDO_MAX = 100;
 function _cloneEffects() { return S.effects.map(e => ({ ...e })); }
 function _effectsSig(list) {
   return list.length + '|' + list.map(e =>
-    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + e.color + ',' + (e.brightness ?? 100) + ',' + (e.xlSettings || '')
+    e.id + ',' + e.propIdx + ',' + e.startTime.toFixed(4) + ',' + e.endTime.toFixed(4) + ',' + e.type + ',' + effColors(e).join('+') + ',' + (e.brightness ?? 100) + ',' + (e.xlSettings || '')
   ).join(';');
 }
 // Push a pre-mutation snapshot onto the undo stack — but only if the effects
@@ -3659,7 +3728,7 @@ function copySelectedEffects() {
     const p = S.props[e.propIdx];
     const mrow = _modelRowOf(e);
     return {
-      type: e.type, color: e.color, brightness: e.brightness ?? 100, xlSettings: e.xlSettings ?? null,
+      type: e.type, color: e.color, extraColors: e.extraColors ?? null, brightness: e.brightness ?? 100, xlSettings: e.xlSettings ?? null,
       dt:  e.startTime - minStart,          // time offset from the earliest copied effect
       dur: e.endTime - e.startTime,
       rowOffset: mrow >= 0 ? propRowDistance(minRow, mrow) : 0,  // in prop rows
@@ -3685,7 +3754,7 @@ function copyModel(propIdx) {
   if (!items.length) { flashStatus(`"${model.name}" has no effects to copy`); return; }
   const minStart = Math.min(...items.map(g => g.e.startTime));
   S.clipboard = items.map(g => ({
-    type: g.e.type, color: g.e.color, brightness: g.e.brightness ?? 100, xlSettings: g.e.xlSettings ?? null,
+    type: g.e.type, color: g.e.color, extraColors: g.e.extraColors ?? null, brightness: g.e.brightness ?? 100, xlSettings: g.e.xlSettings ?? null,
     dt: g.e.startTime - minStart, dur: g.e.endTime - g.e.startTime,
     rowOffset: 0, subName: g.sub,
   }));
@@ -3739,7 +3808,7 @@ function pasteEffects(explicitRow, explicitTime) {
     if (pi < 0) return;
     const start = Math.max(0, base + c.dt);     // preserve the set's internal spacing
     const id = S.nextId++;
-    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
+    S.effects.push({ id, propIdx: pi, startTime: start, endTime: start + c.dur, type: c.type, color: c.color, extraColors: c.extraColors ?? null, brightness: c.brightness ?? 100, xlSettings: c.xlSettings ?? null });
     newIds.push(id);
   });
   if (!newIds.length) { flashStatus('Nothing to paste here: this model has no drops matching the copied ones'); return; }
@@ -3758,7 +3827,7 @@ function removeDuplicateEffects() {
   const keep = [];
   let removed = 0;
   for (const e of S.effects) {
-    const k = e.propIdx + '|' + e.startTime.toFixed(4) + '|' + e.endTime.toFixed(4) + '|' + e.type + '|' + e.color;
+    const k = e.propIdx + '|' + e.startTime.toFixed(4) + '|' + e.endTime.toFixed(4) + '|' + e.type + '|' + effColors(e).join('+');
     if (seen.has(k)) { removed++; continue; }
     seen.add(k);
     keep.push(e);
@@ -3817,8 +3886,9 @@ function buildXSQXml() {
   // xLights ColorPalettes: one <ColorPalette> entry per unique colour AND
   // brightness (brightness lives in the palette); each <Effect> references its
   // palette by 0-based index.
-  const paletteKey = eff => (eff.color || '#ffffff').toUpperCase() + '|' + effBrightness(eff);
-  const paletteMap = new Map();   // "HEX|brightness" → index
+  const paletteKey = eff => effColors(eff).slice(0, PALETTE_SLOTS)
+    .map(c => (c || '#ffffff').toUpperCase()).join('+') + '|' + effBrightness(eff);
+  const paletteMap = new Map();   // "HEX+HEX…|brightness" → index
   S.effects.forEach(eff => {
     const key = paletteKey(eff);
     if (!paletteMap.has(key)) paletteMap.set(key, paletteMap.size);
@@ -3826,16 +3896,15 @@ function buildXSQXml() {
 
   xml += `  <ColorPalettes>\n`;
   paletteMap.forEach((idx, key) => {
-    const [hex, bri] = key.split('|');
-    // C_BUTTON_Palette1 is the foreground colour; Palette1 enabled, rest black/off
-    xml += `    <ColorPalette>C_BUTTON_Palette1=${hex},C_BUTTON_Palette2=#000000,` +
-           `C_BUTTON_Palette3=#000000,C_BUTTON_Palette4=#000000,` +
-           `C_BUTTON_Palette5=#000000,C_BUTTON_Palette6=#000000,` +
-           `C_BUTTON_Palette7=#000000,C_BUTTON_Palette8=#000000,` +
+    const [hexes, bri] = key.split('|');
+    // Slot 1 is the effect's colour; slots 2-8 its extra colours. Used slots are
+    // enabled, the rest black/off.
+    const cols = hexes.split('+');
+    const slots = Array.from({ length: PALETTE_SLOTS }, (_, k) => k);
+    xml += `    <ColorPalette>` +
+           slots.map(k => `C_BUTTON_Palette${k + 1}=${cols[k] || '#000000'},`).join('') +
            `C_CHECKBOXBRIGHTNESSLEVEL=0,C_CHECKBOX_Chroma=0,C_CHECKBOX_MusicSparkles=0,` +
-           `C_CHECKBOX_Palette1=1,C_CHECKBOX_Palette2=0,C_CHECKBOX_Palette3=0,` +
-           `C_CHECKBOX_Palette4=0,C_CHECKBOX_Palette5=0,C_CHECKBOX_Palette6=0,` +
-           `C_CHECKBOX_Palette7=0,C_CHECKBOX_Palette8=0,` +
+           slots.map(k => `C_CHECKBOX_Palette${k + 1}=${k < cols.length ? 1 : 0},`).join('') +
            `C_SLIDER_Brightness=${bri},C_SLIDER_SparkleFrequency=0</ColorPalette>\n`;
   });
   xml += `  </ColorPalettes>\n`;
@@ -4796,8 +4865,17 @@ function renderRecentColors() {
   };
   build('palette-colors', SHOW_PALETTE, hex => pickActive(hex, false));  // already pinned
   build('recent-colors',  recent,       hex => pickActive(hex, true));
-  // Modal swatches stage the edited effect's color (committed on Save)
-  const pickModal = hex => { document.getElementById('eff-color-input').value = hex; };
+  // Modal swatches stage the edited effect's color (committed on Save) — into
+  // whichever palette slot is selected: the main colour or an extra one.
+  const pickModal = hex => {
+    const k = (S._editTarget || 0) - 1;
+    if (k >= 0 && S._editExtra && k < S._editExtra.length) {
+      S._editExtra = S._editExtra.map((c, i) => i === k ? hex : c);
+      renderExtraColors();
+    } else {
+      document.getElementById('eff-color-input').value = hex;
+    }
+  };
   build('eff-palette-colors', SHOW_PALETTE, pickModal);
   build('eff-recent-colors',  recent,       pickModal);
   const label = document.getElementById('recent-label');
@@ -5145,6 +5223,26 @@ function parsePaletteColor(str) {
   return m ? '#' + m[1] : '#7c5ce4';
 }
 
+// The palette's other enabled colours (slots 2-8, in order), e.g. a two-colour
+// Chase. Slot 1 is always the effect's main colour (parsePaletteColor).
+function parsePaletteExtras(str) {
+  const out = [];
+  for (let n = 2; n <= PALETTE_SLOTS; n++) {
+    if (!new RegExp(`C_CHECKBOX_Palette${n}=1\\b`).test(str)) continue;
+    const m = str.match(new RegExp(`C_BUTTON_Palette${n}=#([0-9A-Fa-f]{6})`));
+    if (m) out.push('#' + m[1].toLowerCase());
+  }
+  return out;
+}
+
+// xLights palettes have 8 colour slots.
+const PALETTE_SLOTS = 8;
+
+// An effect's palette colours in slot order: its main colour, then any extras.
+function effColors(eff) {
+  return [eff.color, ...(eff.extraColors || [])];
+}
+
 // An effect's brightness in percent; effects saved before brightness existed have none.
 function effBrightness(eff) {
   const b = eff && eff.brightness;
@@ -5284,6 +5382,7 @@ async function applyXSQContent(xmlText, xsqName) {
     const paletteEls = [...doc.querySelectorAll('ColorPalettes > ColorPalette')];
     const palettes   = paletteEls.map(p => parsePaletteColor(p.textContent));
     const paletteBri = paletteEls.map(p => parsePaletteBrightness(p.textContent));
+    const paletteExt = paletteEls.map(p => parsePaletteExtras(p.textContent));
 
     // EffectDB: positional array of raw settings strings; each timeline effect's
     // ref="N" indexes into this. Carries the params that distinguish e.g.
@@ -5320,6 +5419,7 @@ async function applyXSQContent(xmlText, xsqName) {
         end:   parseInt(eff.getAttribute('endTime')   || '0') / 1000,
         color: palettes[palIdx] || '#7c5ce4',
         brightness: paletteBri[palIdx] ?? 100,
+        extraColors: paletteExt[palIdx]?.length ? paletteExt[palIdx] : null,
         type:  mapEffectName(name, settings),   // settings-aware: recovers Rainbow/Pulse
         xlSettings: settings || null,           // preserved verbatim for re-export
       };
@@ -5333,7 +5433,7 @@ async function applyXSQContent(xmlText, xsqName) {
         modelEl.querySelectorAll(':scope > EffectLayer > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S._pendingGroupEffects.push({ groupName: parentName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
+            S._pendingGroupEffects.push({ groupName: parentName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, extraColors: e.extraColors, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       }
       // Whole-model effects (direct EffectLayer only, not nested submodel layers)
@@ -5341,7 +5441,7 @@ async function applyXSQContent(xmlText, xsqName) {
         modelEl.querySelectorAll(':scope > EffectLayer > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
+            S.effects.push({ id: S.nextId++, propIdx, startTime: e.start, endTime: e.end, type: e.type, color: e.color, extraColors: e.extraColors, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       }
       // Submodel (drop) effects — parent prop's sub props don't exist yet
@@ -5350,7 +5450,7 @@ async function applyXSQContent(xmlText, xsqName) {
         sml.querySelectorAll(':scope > Effect').forEach(eff => {
           const e = parseEff(eff);
           if (e.end > e.start)
-            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, brightness: e.brightness, xlSettings: e.xlSettings });
+            S._pendingSubEffects.push({ parentName, subName, startTime: e.start, endTime: e.end, type: e.type, color: e.color, extraColors: e.extraColors, brightness: e.brightness, xlSettings: e.xlSettings });
         });
       });
     });
@@ -5555,7 +5655,7 @@ async function loadShowLayout() {
       S._pendingSubEffects.forEach(pe => {
         const idx = nameToIdx.get(pe.parentName + '/' + pe.subName);
         if (idx !== undefined)
-          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, brightness: pe.brightness, xlSettings: pe.xlSettings });
+          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, extraColors: pe.extraColors, brightness: pe.brightness, xlSettings: pe.xlSettings });
       });
       S._pendingSubEffects = [];
     }
@@ -5563,7 +5663,7 @@ async function loadShowLayout() {
       S._pendingGroupEffects.forEach(pe => {
         const idx = S.props.findIndex(p => p.isGroup && p.name === pe.groupName);
         if (idx >= 0)
-          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, brightness: pe.brightness, xlSettings: pe.xlSettings });
+          S.effects.push({ id: S.nextId++, propIdx: idx, startTime: pe.startTime, endTime: pe.endTime, type: pe.type, color: pe.color, extraColors: pe.extraColors, brightness: pe.brightness, xlSettings: pe.xlSettings });
       });
       S._pendingGroupEffects = [];
     }
@@ -5893,7 +5993,7 @@ function _rgbToHsv([r, g, b]) {
 
 // One frame: per-cell colours (null = off), indexed by buffer column, or by
 // y*W + x when Group All runs the chase node by node through a 2-D buffer.
-function _chaseFrame(p, W, H, pos, baseRGB) {
+function _chaseFrame(p, W, H, pos, paletteRGB) {
   const groupAll = p.groupAll && H > 1;
   const total = groupAll ? W * H : W;
   const t = p.type;
@@ -5928,7 +6028,10 @@ function _chaseFrame(p, W, H, pos, baseRGB) {
   else { start = Math.trunc((width + scaled - 1) * rt + 1); if (rt >= 0.999999) start -= 1; }
 
   const cells = new Array(total).fill(null);
-  const [h0, s0, v0] = p.rainbow ? [0, 1, 1] : _rgbToHsv(baseRGB);
+  // Fades scale from palette colour 1's value (xLights' orig_v); each pixel's hue
+  // and saturation come from its colour band.
+  const bandHsv = paletteRGB.map(_rgbToHsv);
+  const [h0, s0, v0] = p.rainbow ? [0, 1, 1] : bandHsv[0];
   const mcw = Math.max(1, Math.trunc(width * p.size / 100));
   const middle = !p.fade ? 0 : (mcw % 2 === 0 ? Math.trunc(mcw / 2) - 1 : Math.trunc(mcw / 2));
   let ppc = Math.trunc(width / N);
@@ -5951,8 +6054,13 @@ function _chaseFrame(p, W, H, pos, baseRGB) {
       }
     }
     for (let i = 0; i < nPix; i++) {
-      const h = p.rainbow ? 1 - i / mcw : h0;
-      let v = v0;
+      // A multi-colour palette splits the chase band into equal colour bands,
+      // palette colour 1 at the head (xLights: ceil((mcw - i) * n / mcw) - 1).
+      const nc = bandHsv.length;
+      const band = nc > 1 ? Math.min(nc - 1, Math.ceil((mcw - i) * nc / mcw) - 1) : 0;
+      const [hb, sb, vb] = p.rainbow ? [h0, s0, v0] : bandHsv[band];
+      const h = p.rainbow ? 1 - i / mcw : hb;
+      let v = vb;
       let nx;
       if (AutoReverse) {
         nx = firstX + dir;
@@ -5976,7 +6084,7 @@ function _chaseFrame(p, W, H, pos, baseRGB) {
                 v = Math.max(0, v); break;                                                // Middle
       }
       if (nx < 0 || nx > width) continue;
-      let c = _hsv3(h * 360, p.rainbow ? 1 : s0, v);
+      let c = _hsv3(h * 360, p.rainbow ? 1 : sb, v);
       if (p.fade >= 2 && nx < total) {   // these fades keep the brighter of overlapping heads/tails
         const prev = cells[nx];
         if (prev && (prev[0] || prev[1] || prev[2]))
@@ -6000,11 +6108,12 @@ function _fxChase(eff, idx, n, el, dur, buf) {
   const p = _chaseParams(eff.xlSettings);
   const b = buf || { x: idx, y: 0, w: n, h: 1 };
   const pos = Math.min(1, Math.max(0, el / dur));
-  const key = `${eff.xlSettings || ''}|${eff.color}|${b.w}x${b.h}|${pos.toFixed(4)}`;
+  const cols = effColors(eff);
+  const key = `${eff.xlSettings || ''}|${cols.join('+')}|${b.w}x${b.h}|${pos.toFixed(4)}`;
   let cells = _chaseFrameCache.get(key);
   if (!cells) {
     if (_chaseFrameCache.size > 256) _chaseFrameCache.clear();
-    cells = _chaseFrame(p, b.w, b.h, pos, _rgb3(eff.color));
+    cells = _chaseFrame(p, b.w, b.h, pos, cols.map(_rgb3));
     _chaseFrameCache.set(key, cells);
   }
   const cell = (p.groupAll && b.h > 1) ? cells[b.y * b.w + b.x] : cells[b.x];
@@ -6104,13 +6213,27 @@ function _xlOn(c) {
   return cells.fill(col);
 }
 
+// xLights RenderBuffer::GetMultiColorBlend: position n (0..1) through the palette,
+// blending neighbouring colours channel by channel. Circular wraps last → first.
+function _xlMultiColorBlend(palette, n, circular) {
+  const cnt = palette.length;
+  if (cnt <= 1) return palette[0] || [255, 255, 255];
+  n = Math.min(0.99999, Math.max(0, n));
+  const real = circular ? n * cnt : n * (cnt - 1);
+  const i1 = Math.floor(real), i2 = (i1 + 1) % cnt, r = real - i1;
+  const a = palette[i1], b = palette[i2];
+  return [0, 1, 2].map(k => a[k] + Math.floor(r * (b[k] - a[k]) + 0.5));
+}
+
 // ── Color Wash ─────────────────────────────────────────────────────────────────
 function _xlColorWash(c) {
   const s = c.set, { W, H } = c, cells = _xlCells(W, H);
   if (s.bool('ColorWash_Shimmer') && c.frame % 2) return cells;
   const hf = s.bool('ColorWash_HFade'), vf = s.bool('ColorWash_VFade'), rev = s.bool('ColorWash_ReverseFades');
   const halfW = (W - 1) / 2, halfH = (H - 1) / 2;
-  const [h, sat, v] = c.hsv;   // one palette colour, so the Cycles sweep has nothing to blend
+  // The whole buffer is one colour, swept through the palette Cycles times.
+  const pos = _xlPosCycles(c, s.num('ColorWash_Cycles', 1));
+  const [h, sat, v] = _rgbToHsv(_xlMultiColorBlend(c.palette, pos, s.bool('ColorWash_CircularPalette')));
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     let mh = 1, mv = 1;
     if (hf) { const d = Math.abs(x - halfW); mh = Math.min(1, Math.max(0, rev ? (halfW > 0 ? d / halfW : 0) : (halfW > 0 ? 1 - d / halfW : 1))); }
@@ -6354,7 +6477,7 @@ function _xlMarquee(c) {
 // ── Chase (SingleStrand chase; engine above) ───────────────────────────────────
 function _xlChase(c) {
   const p = _chaseParams(c.settingsStr);
-  const cols = _chaseFrame(p, c.W, c.H, c.periods > 0 ? c.frame / c.periods : 0, c.rgb);
+  const cols = _chaseFrame(p, c.W, c.H, c.periods > 0 ? c.frame / c.periods : 0, c.palette);
   if (p.groupAll && c.H > 1) return cols;                // already indexed y*W + x
   const cells = _xlCells(c.W, c.H);
   for (let y = 0; y < c.H; y++) for (let x = 0; x < c.W; x++) cells[y * c.W + x] = cols[x];
@@ -6809,11 +6932,12 @@ function xlEffectCells(eff, W, H, el, dur) {
   const frame = Math.max(0, Math.round(el * 1000 / fms));
   const periods = Math.max(0, Math.round(dur * 1000 / fms));
   const settingsStr = eff.xlSettings || effectSettings(eff.type);
-  const key = [eff.id ?? 'preview', eff.type, settingsStr, eff.color, W, H, periods, eff.startTime ?? ''].join('|');
+  const key = [eff.id ?? 'preview', eff.type, settingsStr, effColors(eff).join('+'), W, H, periods, eff.startTime ?? ''].join('|');
   let e = _xlCache.get(key);
   if (e && e.frame === frame) return e.cells;
   const ctx = { W, H, frame, periods, fms, settingsStr, set: _xlSettings(settingsStr),
-                rgb: _rgb3(eff.color || '#ffffff'), hsv: _rgbToHsv(_rgb3(eff.color || '#ffffff')) };
+                rgb: _rgb3(eff.color || '#ffffff'), hsv: _rgbToHsv(_rgb3(eff.color || '#ffffff')),
+                palette: effColors(eff).map(c => _rgb3(c || '#ffffff')) };   // all palette colours, slot order
   if (_xlCache.size > 400) _xlCache.clear();
   if (typeof impl === 'function') {
     const cells = impl(ctx);
